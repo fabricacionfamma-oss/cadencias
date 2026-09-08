@@ -53,17 +53,14 @@ def procesar_datos_eventos_tc(df_e, df_s):
     ce_tiempo = encontrar_col(df_e, ['TIEMPO (MIN)', 'TIEMPO PRODUCTIVO', 'TIEMPO'], 'EVENTOS')
     ce_evento = encontrar_col(df_e, ['NIVEL 1', 'EVENTO', 'ESTADO'], 'EVENTOS')
     
-    # EXTRAER FÁBRICA/PLANTA SI EXISTE
     ce_fab = next((c for c in df_e.columns if 'FÁBRICA' in c.upper() or 'FABRICA' in c.upper() or 'PLANTA' in c.upper()), None)
     if ce_fab:
         df_e['Fábrica'] = df_e[ce_fab].astype(str).str.strip().str.upper()
     else:
         df_e['Fábrica'] = 'GENERAL'
 
-    # FILTRO: EXCLUIR PLANTA CALIDAD
     df_e = df_e[df_e['Fábrica'] != 'CALIDAD'].copy()
 
-    # IDENTIFICACIÓN DE PIEZAS DESGLOSADAS
     ce_buenas = encontrar_col(df_e, ['BUENAS'], 'EVENTOS')
     
     ce_rt = None
@@ -88,7 +85,6 @@ def procesar_datos_eventos_tc(df_e, df_s):
     subset_dups = [ce_maq, ce_fec_ini, ce_fec_fin, ce_tiempo, ce_buenas] + cols_cod_e
     df_e = df_e.drop_duplicates(subset=subset_dups, keep='first').copy()
 
-    # CÁLCULOS DE TIEMPOS Y PIEZAS (DESGLOSE)
     df_e['Tiempo_Min'] = pd.to_numeric(df_e[ce_tiempo].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
     df_e['Es_Prod'] = df_e[ce_evento].astype(str).str.upper().str.contains('PRODUCCI')
     
@@ -160,18 +156,18 @@ def procesar_datos_eventos_tc(df_e, df_s):
     df_prod_master = pd.DataFrame(prod_data)
     if df_prod_master.empty: raise ValueError("No se encontraron productos válidos en el archivo.")
 
-    # AGRUPACIÓN DIARIA
     df_daily_prod = df_prod_master.groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', 'Producto', 'N']).agg({
         'T_Prod': 'sum', 'T_Parada': 'sum', 'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum'
     }).reset_index()
     
-    # Nos quedamos con lo que tenga tiempo de producción, de parada o piezas
-    df_daily_prod = df_daily_prod[(df_daily_prod['Buenas'] > 0) | (df_daily_prod['Scrap'] > 0) | (df_daily_prod['RT'] > 0) | (df_daily_prod['T_Prod'] > 0)].copy()
+    # ====================================================
+    # FILTRO: DESCARTAR REGISTROS CON MENOS DE 1 MINUTO
+    # ====================================================
+    df_daily_prod = df_daily_prod[df_daily_prod['T_Prod'] >= 1.0].copy()
 
     df_daily_prod.rename(columns={'T_Prod': 'Tiempo_Min'}, inplace=True)
     df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
 
-    # CRUCE CON TIEMPOS DE CICLO
     col_tc = next((c for c in df_s.columns if 'TIEMPO CICLO' in c.upper() or 'CICLO' in c.upper() or 'TC' in c.upper()), df_s.columns[-1])
     col_cod = next((c for c in df_s.columns if 'CÓDIGO PRODUCTO' in c.upper() or 'CODIGO PRODUCTO' in c.upper()), None)
     if not col_cod: col_cod = next((c for c in df_s.columns if 'PRODUCTO' in c.upper() and 'CÓDIGO' in c.upper()), None)
@@ -233,8 +229,6 @@ def generar_pdf_produccion(maquinas, df_productos, intervalo_str):
             pdf.set_font("Arial", 'B', 7)
             pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
             
-            # Anchos calculados: Total 190mm
-            # Simult(15) | Hs Prd(13) | Hs Par(13) | Disp%(12) | B(12) | RT(10) | Scr(10) | PH R(15) | TC Ing(16) | PH Est(15) | Dif(14) | Perf%(15)
             cols_p = [("Simult", 15), ("Hs Prd", 15), ("Hs Par", 15), ("Disp%", 14), ("B", 14), ("RT", 12), ("Scr", 12), ("PH R", 18), ("TC Ing", 18), ("PH Est", 18), ("Dif", 16), ("Perf%", 23)]
             for txt, w in cols_p: pdf.cell(w, 7, txt, 1, 0, 'C', True)
             pdf.ln()
@@ -397,7 +391,7 @@ else:
             
             df_prod_master, df_daily_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
 
-        # --- SISTEMA DE MEMORIA GLOBAL (Se reinicia si se cierra la app) ---
+        # --- SISTEMA DE MEMORIA GLOBAL (A prueba de formatos viejos) ---
         if "correcciones_cadencia" not in st.session_state:
             st.session_state["correcciones_cadencia"] = {}
 
@@ -409,10 +403,11 @@ else:
         df_daily_prod['Scrap_Edit'] = df_daily_prod['Scrap']
 
         for clave, edits in st.session_state["correcciones_cadencia"].items():
-            mask = df_daily_prod['Clave_Unica'] == clave
-            df_daily_prod.loc[mask, 'Buenas_Edit'] = edits['Buenas']
-            df_daily_prod.loc[mask, 'RT_Edit'] = edits['RT']
-            df_daily_prod.loc[mask, 'Scrap_Edit'] = edits['Scrap']
+            if isinstance(edits, dict):
+                mask = df_daily_prod['Clave_Unica'] == clave
+                df_daily_prod.loc[mask, 'Buenas_Edit'] = edits.get('Buenas', 0)
+                df_daily_prod.loc[mask, 'RT_Edit'] = edits.get('RT', 0)
+                df_daily_prod.loc[mask, 'Scrap_Edit'] = edits.get('Scrap', 0)
 
         # El Pzas_Prod oficial ahora es la suma de los campos editados
         df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas_Edit'] + df_daily_prod['RT_Edit'] + df_daily_prod['Scrap_Edit']
@@ -694,10 +689,6 @@ else:
                  "2. Reporte Evolutivo Diario (Gráfico de Líneas)", 
                  "3. Generar AMBOS"]
             )
-
-            incluir_op = False
-            if "1" in opcion_reporte or "3" in opcion_reporte:
-                incluir_op = st.checkbox("Incluir detalle de OPERARIOS en el Reporte General", value=True)
 
             maquinas_a_procesar = []
             modo_descarga = '1'
