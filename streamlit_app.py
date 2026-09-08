@@ -21,6 +21,7 @@ class ReportePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
         self.set_text_color(0, 66, 134)
+        # Se quitó "FAMMA" del título del PDF
         self.cell(0, 10, 'Reporte de Eficiencia de Produccion', 0, 0, 'C')
         self.ln(10)
 
@@ -454,7 +455,8 @@ with st.sidebar:
     uploaded_e = st.file_uploader("📂 Archivo EVENTOS", type=['csv', 'xlsx'])
     uploaded_s = st.file_uploader("📂 Archivo TIEMPOS (Ciclo)", type=['csv', 'xlsx'])
 
-st.title("⚙️ Análisis de Cadencias y Eficiencia - FAMMA")
+# Se quitó "FAMMA" del título de la aplicación web
+st.title("⚙️ Análisis de Cadencias y Eficiencia")
 
 if not (uploaded_e and uploaded_s):
     st.info("👈 Por favor, carga los archivos de Excel/CSV en el panel lateral para visualizar las cadencias.")
@@ -470,7 +472,7 @@ else:
         
         tab1, tab2 = st.tabs(["📊 Vista Detallada de Máquina", "📄 Exportación PDF"])
 
-        # --- PESTAÑA 1: VISUALIZACIÓN WEB (Mantenemos igual) ---
+        # --- PESTAÑA 1: VISUALIZACIÓN WEB ---
         with tab1:
             st.markdown(f"**{intervalo_str}**")
             maq_sel = st.selectbox("📌 Seleccione la Máquina a evaluar:", maquinas_disp)
@@ -541,7 +543,7 @@ else:
                     use_container_width=True, hide_index=True
                 )
 
-        # --- PESTAÑA 2: MENÚ DE EXPORTACIÓN A PDF EXACTAMENTE COMO EN COLAB ---
+        # --- PESTAÑA 2: MENÚ DE EXPORTACIÓN A PDF ---
         with tab2:
             st.markdown("### 📄 Configuración de Reportes PDF")
             
@@ -574,11 +576,9 @@ else:
 
             st.divider()
             
-            # Botón de acción para generar PDFs
             if st.button("🚀 Procesar Documentos PDF", type="primary"):
                 with st.spinner("Construyendo archivos PDF..."):
                     
-                    # 1. GENERAR REPORTE GENERAL
                     if ("1" in opcion_reporte or "3" in opcion_reporte) and not df_global.empty:
                         maqs_general = sorted(df_global['Máquina'].unique())
                         res_gen = generar_pdf_produccion(maqs_general, df_global, df_productos, df_operarios, incluir_op, intervalo_str)
@@ -593,7 +593,6 @@ else:
                                     mime="application/pdf"
                                 )
                     
-                    # 2. GENERAR REPORTE EVOLUTIVO
                     if ("2" in opcion_reporte or "3" in opcion_reporte) and maquinas_a_procesar:
                         archivos_evo = generar_evolutivo_master(df_daily_prod, maquinas_a_procesar, modo_descarga, intervalo_str)
                         
@@ -606,7 +605,7 @@ else:
                                         data=f, 
                                         file_name=arch, 
                                         mime="application/pdf", 
-                                        key=arch # Key única requerida por streamlit
+                                        key=arch
                                     )
 
     except Exception as e:
