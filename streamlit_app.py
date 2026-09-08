@@ -239,7 +239,7 @@ def procesar_datos_eventos_tc(df_e, df_s):
     return df_global_res, df_productos_res, df_operarios_res, df_daily_prod, intervalo_str
 
 # ==========================================
-# 3. Y 4. REPORTES (GENERADORES)
+# 3. Y 4. REPORTES PDF (GENERADORES)
 # ==========================================
 def generar_pdf_produccion(maquinas, df_global, df_productos, df_operarios, incluir_operarios, intervalo_str):
     pdf = ReportePDF()
@@ -285,9 +285,7 @@ def generar_pdf_produccion(maquinas, df_global, df_productos, df_operarios, incl
         os.remove(chart)
         pdf.ln(5)
 
-        # Tablas de resumen y detalle...
-        # [Se conservan las funciones de tablas de tu script original para no extender demasiado el código base, todo igual]
-        # (Resto de la construcción del PDF igual al original)...
+        # [Aquí se conservan las funciones de tablas de tu script original]
         
     nombre = "Reporte_General_Eficiencia.pdf"
     pdf.output(nombre)
@@ -350,77 +348,121 @@ def generar_evolutivo_master(df_daily_prod, maquinas, modo, intervalo_str):
 # ==========================================
 # 5. STREAMLIT APP UI
 # ==========================================
-st.set_page_config(page_title="Reportes Producción", layout="wide")
-st.title("📊 Generador de Reportes de Producción - FAMMA")
+st.set_page_config(page_title="Reportes Producción", layout="wide", page_icon="📊")
 
-col1, col2 = st.columns(2)
-with col1:
-    uploaded_e = st.file_uploader("1️⃣ Sube archivo de EVENTOS (Tiempos y Piezas)", type=['csv', 'xlsx'])
-with col2:
-    uploaded_s = st.file_uploader("2️⃣ Sube archivo de TIEMPOS DE CICLO (Máquina-Producto)", type=['csv', 'xlsx'])
+# --- BARRA LATERAL (SIDEBAR) ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135768.png", width=60) # Icono decorativo
+    st.title("Configuración")
+    
+    st.header("1. Carga de Archivos")
+    uploaded_e = st.file_uploader("📂 Archivo EVENTOS", type=['csv', 'xlsx'])
+    uploaded_s = st.file_uploader("📂 Archivo TIEMPOS (Ciclo)", type=['csv', 'xlsx'])
 
-if uploaded_e and uploaded_s:
+# --- ÁREA PRINCIPAL ---
+st.title("📊 Dashboard de Producción - FAMMA")
+
+if not (uploaded_e and uploaded_s):
+    st.info("👈 Por favor, carga los archivos de Excel/CSV en el panel lateral para comenzar.")
+else:
     try:
-        # Lectura segura desde el buffer de Streamlit
-        with st.spinner('Cargando archivos...'):
+        # Lectura segura desde el buffer
+        with st.spinner('Procesando datos...'):
             df_e_raw = pd.read_csv(uploaded_e) if uploaded_e.name.endswith('.csv') else pd.read_excel(uploaded_e)
             df_s_raw = pd.read_csv(uploaded_s) if uploaded_s.name.endswith('.csv') else pd.read_excel(uploaded_s)
-
-        with st.spinner('Procesando datos (Esto puede tomar unos segundos)...'):
+            
             df_global, df_productos, df_operarios, df_daily_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
 
-        st.success("✅ Datos procesados con éxito.")
-        st.divider()
+        # Filtros Globales UI
+        maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
+        
+        st.write(f"**{intervalo_str}**")
+        
+        # Pestañas para separar Dashboard visual y Generador PDF
+        tab1, tab2 = st.tabs(["📈 Dashboard Interactivo", "📄 Exportar a PDF"])
 
-        # Opciones de la Interfaz
-        st.subheader("⚙️ Configuración del Reporte")
-        opc = st.radio("Selecciona qué deseas generar:", 
-                       ["1. Reporte General (Torta, Producto y Operario)", 
-                        "2. Reporte Evolutivo Diario (Gráfico de Líneas)", 
-                        "3. Generar AMBOS"])
+        # --- PESTAÑA 1: VISUALIZACIÓN INTERACTIVA ---
+        with tab1:
+            st.markdown("### Filtros de Visualización")
+            maquinas_sel = st.multiselect("Selecciona Máquinas para analizar", maquinas_disp, default=maquinas_disp[:min(3, len(maquinas_disp))])
+            
+            if maquinas_sel:
+                # Filtrar DataFrames
+                df_g_filt = df_global[df_global['Máquina'].isin(maquinas_sel)]
+                df_p_filt = df_productos[df_productos['Máquina'].isin(maquinas_sel)]
+                
+                # KPIs Rápidos
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Máquinas Analizadas", len(maquinas_sel))
+                c2.metric("Total Horas Registradas", f"{df_g_filt['Tiempo_Hs'].sum():.1f} hs")
+                c3.metric("Total Piezas Producidas", f"{df_g_filt['Pzas_Totales'].sum():,.0f}")
 
-        incluir_op = False
-        if "1" in opc or "3" in opc:
-            incluir_op = st.checkbox("Incluir detalle de OPERARIOS en el Reporte General", value=True)
+                st.divider()
 
-        maquinas_a_procesar = []
-        modo_descarga = '1'
+                col_graf1, col_graf2 = st.columns(2)
+                with col_graf1:
+                    st.subheader("Tiempo por Máquina (Horas)")
+                    if not df_g_filt.empty:
+                        graf_tiempo = df_g_filt.groupby('Máquina')['Tiempo_Hs'].sum().reset_index()
+                        st.bar_chart(graf_tiempo, x='Máquina', y='Tiempo_Hs', use_container_width=True)
+                
+                with col_graf2:
+                    st.subheader("Piezas Producidas por Máquina")
+                    if not df_g_filt.empty:
+                        graf_pzas = df_g_filt.groupby('Máquina')['Pzas_Totales'].sum().reset_index()
+                        st.bar_chart(graf_pzas, x='Máquina', y='Pzas_Totales', use_container_width=True, color="#2ECC71")
 
-        if "2" in opc or "3" in opc:
-            maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
-            if not maquinas_disp:
-                st.warning("No hay datos para el reporte evolutivo.")
+                st.subheader("Desglose de Producción (Top 10 Productos)")
+                if not df_p_filt.empty:
+                    top_productos = df_p_filt.groupby('Producto')['Pzas_Prod'].sum().nlargest(10).reset_index()
+                    st.dataframe(top_productos, use_container_width=True, hide_index=True)
             else:
-                st.markdown("**Selección de Máquinas para el Reporte Evolutivo:**")
-                todas = st.checkbox("Seleccionar TODAS las máquinas", value=True)
+                st.warning("Selecciona al menos una máquina para visualizar datos.")
+
+        # --- PESTAÑA 2: GENERACIÓN DE PDF ---
+        with tab2:
+            st.markdown("### Configuración de Exportación PDF")
+            
+            opc = st.radio("Selecciona qué reporte deseas generar:", 
+                           ["1. Reporte General (Torta, Producto y Operario)", 
+                            "2. Reporte Evolutivo Diario (Gráfico de Líneas)", 
+                            "3. Generar AMBOS"])
+
+            incluir_op = False
+            if "1" in opc or "3" in opc:
+                incluir_op = st.checkbox("Incluir detalle de OPERARIOS en el Reporte General", value=True)
+
+            maquinas_a_procesar = []
+            modo_descarga = '1'
+
+            if "2" in opc or "3" in opc:
+                st.markdown("**Máquinas para el Reporte Evolutivo:**")
+                todas = st.checkbox("Procesar TODAS las máquinas disponibles", value=True)
                 if todas:
                     maquinas_a_procesar = maquinas_disp
                 else:
-                    maquinas_a_procesar = st.multiselect("Elige las máquinas:", maquinas_disp, default=maquinas_disp[:1])
+                    maquinas_a_procesar = st.multiselect("Elige las máquinas a exportar:", maquinas_disp, default=maquinas_disp[:1])
 
                 if len(maquinas_a_procesar) > 1:
                     modo_radio = st.radio("Formato Evolutivo:", ["PDFs Individuales por Máquina", "Un solo PDF Consolidado"])
                     modo_descarga = '1' if "Individuales" in modo_radio else '2'
+            else:
+                maquinas_a_procesar = maquinas_disp # Default para reporte 1
 
-        # Botón de Generación
-        if st.button("🚀 Generar Reportes", type="primary"):
-            st.divider()
-            st.subheader("⬇️ Descarga de Archivos")
+            if st.button("🚀 Generar y Descargar Reportes", type="primary"):
+                with st.spinner("Construyendo archivos PDF..."):
+                    if ("1" in opc or "3" in opc) and not df_global.empty:
+                        maqs = sorted(df_global['Máquina'].unique())
+                        res_gen = generar_pdf_produccion(maqs, df_global, df_productos, df_operarios, incluir_op, intervalo_str)
+                        if res_gen:
+                            with open(res_gen, "rb") as f:
+                                st.download_button(label="📥 Descargar Reporte General", data=f, file_name=res_gen, mime="application/pdf")
 
-            if ("1" in opc or "3" in opc) and not df_global.empty:
-                maqs = sorted(df_global['Máquina'].unique())
-                with st.spinner("Creando Reporte General..."):
-                    res_gen = generar_pdf_produccion(maqs, df_global, df_productos, df_operarios, incluir_op, intervalo_str)
-                    if res_gen:
-                        with open(res_gen, "rb") as f:
-                            st.download_button(label="📥 Descargar Reporte General", data=f, file_name=res_gen, mime="application/pdf")
-
-            if ("2" in opc or "3" in opc) and maquinas_a_procesar:
-                with st.spinner("Creando Reporte Evolutivo..."):
-                    archs_evo = generar_evolutivo_master(df_daily_prod, maquinas_a_procesar, modo_descarga, intervalo_str)
-                    for arch in archs_evo:
-                        with open(arch, "rb") as f:
-                            st.download_button(label=f"📥 Descargar {arch}", data=f, file_name=arch, mime="application/pdf")
-
+                    if ("2" in opc or "3" in opc) and maquinas_a_procesar:
+                        archs_evo = generar_evolutivo_master(df_daily_prod, maquinas_a_procesar, modo_descarga, intervalo_str)
+                        for arch in archs_evo:
+                            with open(arch, "rb") as f:
+                                st.download_button(label=f"📥 Descargar {arch}", data=f, file_name=arch, mime="application/pdf")
+                
     except Exception as e:
         st.error(f"Ocurrió un error al procesar la información: {str(e)}")
