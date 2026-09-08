@@ -61,6 +61,11 @@ def procesar_datos_eventos_tc(df_e, df_s):
     else:
         df_e['Fábrica'] = 'GENERAL'
 
+    # ====================================================
+    # FILTRO: EXCLUIR PLANTA CALIDAD
+    # ====================================================
+    df_e = df_e[df_e['Fábrica'] != 'CALIDAD'].copy()
+
     ce_nobuenas = None
     for c in df_e.columns:
         if 'NO BUENA' in c.upper() or 'MALA' in c.upper() or 'RECHAZO' in c.upper() or 'SCRAP' in c.upper():
@@ -270,8 +275,8 @@ def generar_pdf_produccion(maquinas, df_global, df_productos, df_operarios, incl
         pdf.cell(40, 8, "Maquina", 1, 0, 'C', True)
         pdf.cell(35, 8, "Piezas Simultaneas", 1, 0, 'C', True)
         pdf.cell(35, 8, "Tiempo Maq. (Hs)", 1, 0, 'C', True)
-        pdf.cell(40, 8, "Total Piezas Wiidem", 1, 0, 'C', True)
-        pdf.cell(40, 8, "PH Wiidem Promedio", 1, 1, 'C', True)
+        pdf.cell(40, 8, "Total Piezas", 1, 0, 'C', True)
+        pdf.cell(40, 8, "PH Promedio", 1, 1, 'C', True)
 
         pdf.set_font("Arial", '', 8)
         for _, r in df_maq_global.sort_values('N').iterrows():
@@ -300,7 +305,7 @@ def generar_pdf_produccion(maquinas, df_global, df_productos, df_operarios, incl
 
                 pdf.set_font("Arial", 'B', 7)
                 pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
-                cols_p = [("Simultaneo", 20), ("Tiempo(Hs)", 20), ("Piezas Wiidem", 32), ("PH Wiidem", 30), ("TC Ingenieria", 30), ("PH Estimada", 30), ("Diferencia", 28)]
+                cols_p = [("Simultaneo", 20), ("Tiempo(Hs)", 20), ("Piezas Producidas", 32), ("PH Real", 30), ("TC Ingenieria", 30), ("PH Estimada", 30), ("Diferencia", 28)]
                 for txt, w in cols_p: pdf.cell(w, 7, txt, 1, 0, 'C', True)
                 pdf.ln()
 
@@ -330,7 +335,7 @@ def generar_pdf_produccion(maquinas, df_global, df_productos, df_operarios, incl
                         pdf.ln(1)
                         pdf.set_font("Arial", 'B', 7)
                         pdf.set_fill_color(230, 230, 230)
-                        cols_op = [("Operario", 65), ("Simultaneo Con", 30), ("Tiempo Prod", 30), ("Piezas Wiidem", 35), ("PH Wiidem", 30)]
+                        cols_op = [("Operario", 65), ("Simultaneo Con", 30), ("Tiempo Prod", 30), ("Piezas Producidas", 35), ("PH Real", 30)]
                         for txt, w in cols_op: pdf.cell(w, 6, txt, 1, 0, 'C', True)
                         pdf.ln()
 
@@ -356,11 +361,9 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     df_daily = df_daily.sort_values(by=['Fecha_DT', 'Producto'])
 
     df_daily['Tiempo_Hs'] = df_daily['Tiempo_Min'] / 60.0
-    df_daily['PH_Wiidem'] = np.where(df_daily['Tiempo_Hs'] > 0, df_daily['Pzas_Prod'] / df_daily['Tiempo_Hs'], 0)
+    df_daily['PH_Real'] = np.where(df_daily['Tiempo_Hs'] > 0, df_daily['Pzas_Prod'] / df_daily['Tiempo_Hs'], 0)
     df_daily['PH_Est'] = np.where(df_daily['TC'] > 0, 60 / df_daily['TC'], 0)
-    df_daily['PMin_Real'] = df_daily['PH_Wiidem'] / 60.0
-    df_daily['PMin_Est'] = df_daily['PH_Est'] / 60.0
-    df_daily['Perfo'] = np.where(df_daily['PH_Est'] > 0, (df_daily['PH_Wiidem'] / df_daily['PH_Est']) * 100, 0)
+    df_daily['Perfo'] = np.where(df_daily['PH_Est'] > 0, (df_daily['PH_Real'] / df_daily['PH_Est']) * 100, 0)
 
     pdf.add_page()
     pdf.set_font("Arial", 'B', 12)
@@ -375,11 +378,11 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     fig, ax = plt.subplots(figsize=(10, 4))
     for prod in df_daily['Producto'].unique():
         df_prod = df_daily[df_daily['Producto'] == prod]
-        ax.plot(df_prod['Fecha_DT'], df_prod['PH_Wiidem'], marker='o', label=str(prod)[:20])
+        ax.plot(df_prod['Fecha_DT'], df_prod['PH_Real'], marker='o', label=str(prod)[:20])
 
     ax.set_title("Evolucion de Cadencia por Codigo de Producto", fontweight='bold', fontsize=10)
     ax.set_xlabel("Fechas de Produccion")
-    ax.set_ylabel("Piezas / Hora (PH Wiidem)")
+    ax.set_ylabel("Piezas / Hora (Real)")
 
     fechas_unicas = sorted(df_daily['Fecha_DT'].unique())
     ax.set_xticks(fechas_unicas)
@@ -400,7 +403,7 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     pdf.set_font("Arial", 'B', 7)
     pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
 
-    cols = [("Fecha", 20), ("Codigo Producto", 50), ("Hs", 12), ("Pz Wiidem", 18), ("PH Wii", 16), ("PH Est", 16), ("PM R", 12), ("PM E", 12), ("Dif", 14), ("Perfo Wii%", 20)]
+    cols = [("Fecha", 20), ("Codigo Producto", 60), ("Tiempo(Hs)", 15), ("Pzas Totales", 20), ("PH Real", 18), ("PH Est", 18), ("Dif", 14), ("Performance%", 25)]
     for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C', True)
     pdf.ln()
 
@@ -408,21 +411,19 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
 
     for _, r in df_daily.iterrows():
         pdf.cell(20, 6, pd.to_datetime(r['Fecha_Str']).strftime('%d/%m/%Y'), 1, 0, 'C')
-        pdf.cell(50, 6, clean_text(r['Producto'])[:35], 1, 0, 'L')
-        pdf.cell(12, 6, f"{r['Tiempo_Hs']:.1f}", 1, 0, 'C')
-        pdf.cell(18, 6, str(int(r['Pzas_Prod'])), 1, 0, 'C')
-        pdf.cell(16, 6, f"{r['PH_Wiidem']:.1f}", 1, 0, 'C')
-        pdf.cell(16, 6, f"{r['PH_Est']:.1f}", 1, 0, 'C')
-        pdf.cell(12, 6, f"{r['PMin_Real']:.2f}", 1, 0, 'C')
-        pdf.cell(12, 6, f"{r['PMin_Est']:.2f}", 1, 0, 'C')
+        pdf.cell(60, 6, clean_text(r['Producto'])[:45], 1, 0, 'L')
+        pdf.cell(15, 6, f"{r['Tiempo_Hs']:.2f}", 1, 0, 'C')
+        pdf.cell(20, 6, str(int(r['Pzas_Prod'])), 1, 0, 'C')
+        pdf.cell(18, 6, f"{r['PH_Real']:.1f}", 1, 0, 'C')
+        pdf.cell(18, 6, f"{r['PH_Est']:.1f}", 1, 0, 'C')
 
-        diff = r['PH_Wiidem'] - r['PH_Est']
+        diff = r['PH_Real'] - r['PH_Est']
         if diff < 0: pdf.set_text_color(200, 0, 0)
         else: pdf.set_text_color(0, 150, 0)
         pdf.cell(14, 6, f"{diff:.1f}", 1, 0, 'C')
 
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(20, 6, f"{r['Perfo']:.1f}%", 1, 1, 'C')
+        pdf.cell(25, 6, f"{r['Perfo']:.1f}%", 1, 1, 'C')
 
     return True
 
@@ -473,22 +474,20 @@ else:
             
             df_global, df_productos_base, df_operarios, df_daily_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
 
-        # --- SISTEMA DE MEMORIA GLOBAL (Sesión activa) ---
+        # --- SISTEMA DE MEMORIA GLOBAL PARA EDICIONES MASIVAS ---
         if "correcciones_cadencia" not in st.session_state:
             st.session_state["correcciones_cadencia"] = {}
 
-        # Conservar el TC Ingenieria Original para mostrarlo siempre intacto
-        df_daily_prod['TC_Original'] = df_daily_prod['TC']
+        df_daily_prod['Pzas_Prod_Original'] = df_daily_prod['Pzas_Prod']
         df_daily_prod['Clave_Unica'] = df_daily_prod['Fecha_Str'] + "_" + df_daily_prod['Máquina'] + "_" + df_daily_prod['Producto']
         
-        # Inyectar las correcciones en el TC funcional
-        for clave, nuevo_ph in st.session_state["correcciones_cadencia"].items():
-            if nuevo_ph > 0:
-                nuevo_tc = 60 / nuevo_ph
-                df_daily_prod.loc[df_daily_prod['Clave_Unica'] == clave, 'TC'] = nuevo_tc
+        # Inyectar correcciones en las Piezas (Total diario)
+        for clave, nuevas_piezas in st.session_state["correcciones_cadencia"].items():
+            if nuevas_piezas >= 0:
+                df_daily_prod.loc[df_daily_prod['Clave_Unica'] == clave, 'Pzas_Prod'] = nuevas_piezas
 
         # ====================================================================================
-        # RECALCULAR DF_PRODUCTOS (RESUMEN GENERAL)
+        # RECALCULAR DF_PRODUCTOS GLOBAL BASADO EN LAS CORRECCIONES DE PIEZAS
         # ====================================================================================
         df_daily_prod['Pzas_Est_Dia'] = np.where(df_daily_prod['TC'] > 0, (df_daily_prod['Tiempo_Min'] / df_daily_prod['TC']), 0)
         df_productos = df_daily_prod.groupby(['Máquina', 'Producto', 'N']).agg({
@@ -503,7 +502,6 @@ else:
         
         maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
         
-        # --- CREACIÓN DE LAS 3 PESTAÑAS ---
         tab1, tab2, tab3 = st.tabs(["📊 Dashboard de Máquina", "🛠️ Editor Masivo por Planta", "📄 Exportación PDF"])
 
         # =====================================================================
@@ -532,22 +530,22 @@ else:
             st.markdown("#### 2. Resumen General por Producto")
             df_m_prod = df_productos[df_productos['Máquina'] == maq_sel].copy()
             if not df_m_prod.empty:
-                df_m_prod['PH Wiidem'] = np.where(df_m_prod['Tiempo_Hs'] > 0, df_m_prod['Pzas_Prod'] / df_m_prod['Tiempo_Hs'], 0)
+                df_m_prod['PH Real'] = np.where(df_m_prod['Tiempo_Hs'] > 0, df_m_prod['Pzas_Prod'] / df_m_prod['Tiempo_Hs'], 0)
                 df_m_prod['PH_Est'] = np.where(df_m_prod['TC'] > 0, 60 / df_m_prod['TC'], 0)
-                df_m_prod['Performance Wiidem (%)'] = np.where(df_m_prod['PH_Est'] > 0, (df_m_prod['PH Wiidem'] / df_m_prod['PH_Est']) * 100, 0)
+                df_m_prod['Performance (%)'] = np.where(df_m_prod['PH_Est'] > 0, (df_m_prod['PH Real'] / df_m_prod['PH_Est']) * 100, 0)
                 
-                df_m_prod.rename(columns={'Pzas_Prod': 'Piezas Wiidem', 'TC': 'TC (Calculado)'}, inplace=True)
+                df_m_prod.rename(columns={'Pzas_Prod': 'Piezas Producidas', 'TC': 'TC Ingenieria'}, inplace=True)
                 
-                tabla_mostrar = df_m_prod[['Producto', 'Simultaneo_Con', 'Tiempo_Hs', 'Piezas Wiidem', 'TC (Calculado)', 'PH Wiidem', 'PH_Est', 'Performance Wiidem (%)']].copy()
+                tabla_mostrar = df_m_prod[['Producto', 'Simultaneo_Con', 'Tiempo_Hs', 'Piezas Producidas', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].copy()
                 st.dataframe(
                     tabla_mostrar.style.format({
-                        'Tiempo_Hs': '{:.2f}', 'Piezas Wiidem': '{:,.0f}', 'TC (Calculado)': '{:.4f}',
-                        'PH Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%'
-                    }).background_gradient(subset=['Performance Wiidem (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                        'Tiempo_Hs': '{:.2f}', 'Piezas Producidas': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
+                        'PH Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance (%)': '{:.1f}%'
+                    }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
                     use_container_width=True, hide_index=True
                 )
                 
-            st.markdown("#### 3. Evolutivo Diario de Cadencia (PH Wiidem)")
+            st.markdown("#### 3. Evolutivo Diario de Cadencia (PH Real)")
             df_daily = df_daily_prod[df_daily_prod['Máquina'] == maq_sel].copy()
             if not df_daily.empty:
                 df_daily_grp = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({'Tiempo_Min': 'sum', 'Pzas_Prod': 'sum'}).reset_index()
@@ -555,15 +553,15 @@ else:
                 df_daily_grp = df_daily_grp.sort_values(by=['Fecha_DT', 'Producto'])
 
                 df_daily_grp['Tiempo_Hs'] = df_daily_grp['Tiempo_Min'] / 60.0
-                df_daily_grp['PH_Wiidem'] = np.where(df_daily_grp['Tiempo_Hs'] > 0, df_daily_grp['Pzas_Prod'] / df_daily_grp['Tiempo_Hs'], 0)
+                df_daily_grp['PH_Real'] = np.where(df_daily_grp['Tiempo_Hs'] > 0, df_daily_grp['Pzas_Prod'] / df_daily_grp['Tiempo_Hs'], 0)
                 df_daily_grp['PH_Est'] = np.where(df_daily_grp['TC'] > 0, 60 / df_daily_grp['TC'], 0)
                 
                 fig_line, ax_line = plt.subplots(figsize=(10, 4))
                 for prod in df_daily_grp['Producto'].unique():
                     df_p = df_daily_grp[df_daily_grp['Producto'] == prod]
-                    ax_line.plot(df_p['Fecha_DT'], df_p['PH_Wiidem'], marker='o', label=str(prod)[:25])
+                    ax_line.plot(df_p['Fecha_DT'], df_p['PH_Real'], marker='o', label=str(prod)[:25])
 
-                ax_line.set_ylabel("Piezas / Hora (PH Wiidem)")
+                ax_line.set_ylabel("Piezas / Hora (PH Real)")
                 fechas_unicas_web = sorted(df_daily_grp['Fecha_DT'].unique())
                 ax_line.set_xticks(fechas_unicas_web)
                 ax_line.set_xticklabels([pd.to_datetime(x).strftime('%d/%m/%Y') for x in fechas_unicas_web], rotation=45, ha='right')
@@ -573,19 +571,19 @@ else:
                 
                 st.markdown("#### 4. Detalle Diario (Día a Día)")
                 df_diario_ui = df_daily_grp.copy()
-                df_diario_ui['Performance Wiidem (%)'] = np.where(df_diario_ui['PH_Est'] > 0, (df_diario_ui['PH_Wiidem'] / df_diario_ui['PH_Est']) * 100, 0)
+                df_diario_ui['Performance (%)'] = np.where(df_diario_ui['PH_Est'] > 0, (df_diario_ui['PH_Real'] / df_diario_ui['PH_Est']) * 100, 0)
                 df_diario_ui['Fecha'] = df_diario_ui['Fecha_DT'].dt.strftime('%d/%m/%Y')
                 
-                df_diario_ui.rename(columns={'Pzas_Prod': 'Piezas Wiidem', 'TC': 'TC (Calculado)', 'PH_Wiidem': 'PH Wiidem'}, inplace=True)
+                df_diario_ui.rename(columns={'Pzas_Prod': 'Piezas Producidas', 'TC': 'TC Ingenieria', 'PH_Real': 'PH Real'}, inplace=True)
 
-                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'Piezas Wiidem', 'TC (Calculado)', 'PH Wiidem', 'PH_Est', 'Performance Wiidem (%)']].iloc[::-1].reset_index(drop=True)
+                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'Piezas Producidas', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].iloc[::-1].reset_index(drop=True)
                 
-                st.info("💡 Si deseas editar los objetivos de cadencia y que los cálculos se actualicen, ve a la pestaña **'🛠️ Editor Masivo por Planta'**.")
+                st.info("💡 Si deseas editar los totales de piezas producidas y que los cálculos se actualicen, ve a la pestaña **'🛠️ Editor Masivo por Planta'**.")
                 st.dataframe(
                     tabla_diaria.style.format({
-                        'Tiempo_Hs': '{:.2f}', 'Piezas Wiidem': '{:,.0f}', 'TC (Calculado)': '{:.4f}',
-                        'PH Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%'
-                    }).background_gradient(subset=['Performance Wiidem (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                        'Tiempo_Hs': '{:.2f}', 'Piezas Producidas': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
+                        'PH Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance (%)': '{:.1f}%'
+                    }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
                     use_container_width=True, hide_index=True
                 )
 
@@ -594,54 +592,45 @@ else:
         # =====================================================================
         with tab2:
             st.markdown("### 🛠️ Corrección de Cadencias (Por Planta)")
-            st.write("Realiza las ediciones de cadencia aquí. Puedes descargar los resultados directamente en Excel.")
+            st.write("Edita el **Total de Piezas** reportado para cada día. El sistema recalculará automáticamente la Pieza/Hora Real, el TC Real y la Performance.")
             
-            # Preparar base global para el editor
             df_edit_global = df_daily_prod.copy()
             df_edit_global['Fecha'] = pd.to_datetime(df_edit_global['Fecha_Str']).dt.strftime('%d/%m/%Y')
             df_edit_global['Tiempo_Hs'] = df_edit_global['Tiempo_Min'] / 60.0
-            df_edit_global['PH Wiidem'] = np.where(df_edit_global['Tiempo_Hs'] > 0, df_edit_global['Pzas_Prod'] / df_edit_global['Tiempo_Hs'], 0)
             
-            # TC Original e Ingeniería
-            df_edit_global['PH_Est'] = np.where(df_edit_global['TC_Original'] > 0, 60 / df_edit_global['TC_Original'], 0)
-            df_edit_global['Performance Wiidem (%)'] = np.where(df_edit_global['PH_Est'] > 0, (df_edit_global['PH Wiidem'] / df_edit_global['PH_Est']) * 100, 0)
+            df_edit_global['PH_Est'] = np.where(df_edit_global['TC'] > 0, 60 / df_edit_global['TC'], 0)
+            df_edit_global.rename(columns={'TC': 'TC Ingenieria'}, inplace=True)
             
-            # Limpieza y renombramiento
-            df_edit_global.rename(columns={'Pzas_Prod': 'Piezas Wiidem', 'TC_Original': 'TC Ingenieria'}, inplace=True)
-            
-            # Listar Plantas disponibles
             plantas_disp = sorted(df_edit_global['Fábrica'].unique())
             
             if plantas_disp:
-                # Crear sub-pestañas para cada planta
                 tabs_plantas = st.tabs([f"🏭 Planta: {p}" for p in plantas_disp])
                 
                 for idx, planta in enumerate(plantas_disp):
                     with tabs_plantas[idx]:
-                        # Filtrar datos de la planta específica
                         df_planta = df_edit_global[df_edit_global['Fábrica'] == planta].copy()
                         
-                        tabla_masiva = df_planta[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'Piezas Wiidem', 'TC Ingenieria', 'PH Wiidem', 'PH_Est', 'Performance Wiidem (%)']].copy()
+                        # Definir la estructura y orden de las columnas visuales
+                        tabla_masiva = df_planta[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'Pzas_Prod_Original', 'TC Ingenieria', 'PH_Est']].copy()
                         
-                        # Pre-cargar el campo editable con el histórico ingresado o el original
-                        tabla_masiva['Piezas Hora Real (Editable ✏️)'] = tabla_masiva['PH_Est'].round(1)
-                        for idx_row, row in tabla_masiva.iterrows():
-                            clave = row['Clave_Unica']
-                            if clave in st.session_state["correcciones_cadencia"]:
-                                tabla_masiva.at[idx_row, 'Piezas Hora Real (Editable ✏️)'] = st.session_state["correcciones_cadencia"][clave]
+                        # Inyectar la columna Editable con los datos reales vigentes (puede que ya vengan editados de la memoria)
+                        tabla_masiva['Piezas Producidas (Editable ✏️)'] = df_planta['Pzas_Prod']
                         
-                        # Columnas calculadas de resultado
-                        tabla_masiva['TC Real'] = np.where(tabla_masiva['Piezas Hora Real (Editable ✏️)'] > 0, 60 / tabla_masiva['Piezas Hora Real (Editable ✏️)'], 0)
-                        tabla_masiva['Performance Real (%)'] = np.where(tabla_masiva['Piezas Hora Real (Editable ✏️)'] > 0, (tabla_masiva['PH Wiidem'] / tabla_masiva['Piezas Hora Real (Editable ✏️)']) * 100, 0)
+                        # Realizar los cálculos sobre esa columna editable en vivo
+                        tabla_masiva['PH Real'] = np.where(tabla_masiva['Tiempo_Hs'] > 0, tabla_masiva['Piezas Producidas (Editable ✏️)'] / tabla_masiva['Tiempo_Hs'], 0)
+                        tabla_masiva['TC Real'] = np.where(tabla_masiva['PH Real'] > 0, 60 / tabla_masiva['PH Real'], 0)
+                        tabla_masiva['Performance Real (%)'] = np.where(tabla_masiva['PH_Est'] > 0, (tabla_masiva['PH Real'] / tabla_masiva['PH_Est']) * 100, 0)
                         
-                        # Editor interactivo por planta
-                        st.info(f"Mostrando datos de: **{planta}**. Al modificar 'Piezas Hora Real', presiona Enter.")
+                        # Reordenar las columnas en el orden solicitado
+                        tabla_masiva = tabla_masiva[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'Pzas_Prod_Original', 'Piezas Producidas (Editable ✏️)', 'TC Ingenieria', 'PH_Est', 'PH Real', 'TC Real', 'Performance Real (%)']]
+
+                        st.info(f"Mostrando datos de: **{planta}**. Al modificar las 'Piezas Producidas', presiona Enter para ver el impacto.")
                         
                         edited_df = st.data_editor(
                             tabla_masiva.style.format({
-                                'Tiempo_Hs': '{:.2f}', 'Piezas Wiidem': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
-                                'PH Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%',
-                                'Piezas Hora Real (Editable ✏️)': '{:.1f}', 'TC Real': '{:.4f}', 'Performance Real (%)': '{:.1f}%'
+                                'Tiempo_Hs': '{:.2f}', 'Pzas_Prod_Original': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
+                                'PH_Est': '{:.1f}', 'PH Real': '{:.1f}', 'TC Real': '{:.4f}', 'Performance Real (%)': '{:.1f}%',
+                                'Piezas Producidas (Editable ✏️)': '{:.0f}'
                             }).background_gradient(subset=['Performance Real (%)'], cmap='RdYlGn', vmin=50, vmax=100),
                             column_config={
                                 "Clave_Unica": None,
@@ -649,17 +638,16 @@ else:
                                 "Máquina": st.column_config.Column(disabled=True),
                                 "Producto": st.column_config.Column(disabled=True),
                                 "Tiempo_Hs": st.column_config.NumberColumn(disabled=True),
-                                "Piezas Wiidem": st.column_config.NumberColumn(disabled=True),
+                                "Pzas_Prod_Original": st.column_config.NumberColumn("Piezas Originales", disabled=True),
                                 "TC Ingenieria": st.column_config.NumberColumn(disabled=True),
-                                "PH Wiidem": st.column_config.NumberColumn(disabled=True),
-                                "PH_Est": st.column_config.NumberColumn(disabled=True),
-                                "Performance Wiidem (%)": st.column_config.NumberColumn(disabled=True),
+                                "PH_Est": st.column_config.NumberColumn("PH Estimada", disabled=True),
+                                "PH Real": st.column_config.NumberColumn(disabled=True),
                                 "TC Real": st.column_config.NumberColumn(disabled=True),
                                 "Performance Real (%)": st.column_config.NumberColumn(disabled=True),
-                                "Piezas Hora Real (Editable ✏️)": st.column_config.NumberColumn(
-                                    "Piezas Hora Real (Editable ✏️)",
-                                    help="Cambia este valor y presiona Enter para recalcular la Performance Real.",
-                                    min_value=0.1, step=1.0
+                                "Piezas Producidas (Editable ✏️)": st.column_config.NumberColumn(
+                                    "Piezas Producidas (Editable ✏️)",
+                                    help="Cambia el total de piezas y presiona Enter para recalcular la cadencia.",
+                                    min_value=0, step=1
                                 )
                             },
                             use_container_width=True, 
@@ -667,16 +655,16 @@ else:
                             key=f"editor_{planta}"
                         )
                         
-                        # Detectar y guardar cambios
+                        # Detectar y guardar cambios en el número de piezas
                         hubo_cambio = False
                         for index, row in edited_df.iterrows():
-                            val_actual = row['Piezas Hora Real (Editable ✏️)']
+                            val_actual = row['Piezas Producidas (Editable ✏️)']
                             clave = row['Clave_Unica']
                             
-                            # Si difiere del estado original y no estaba guardado, o si se cambió el guardado
+                            # Si es diferente a lo guardado en memoria
                             if st.session_state["correcciones_cadencia"].get(clave) != val_actual:
-                                # Verificación de tolerancia (no guardes si es idéntico al base original para evitar basura)
-                                if abs(val_actual - row['PH_Est']) > 0.1 or clave in st.session_state["correcciones_cadencia"]:
+                                # Y si es diferente al original (para no llenar la memoria de filas no editadas)
+                                if val_actual != row['Pzas_Prod_Original'] or clave in st.session_state["correcciones_cadencia"]:
                                     st.session_state["correcciones_cadencia"][clave] = val_actual
                                     hubo_cambio = True
 
@@ -685,9 +673,7 @@ else:
                         col_dl1, col_dl2 = st.columns([1, 4])
                         with col_dl1:
                             if not edited_df.empty:
-                                # Limpiar Excel para descargar (quitar clave única interna)
                                 df_xlsx = edited_df.drop(columns=['Clave_Unica'])
-                                
                                 output = io.BytesIO()
                                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                                     df_xlsx.to_excel(writer, index=False, sheet_name=f'Cadencias_{planta}')
@@ -701,7 +687,7 @@ else:
                                 )
 
                         if hubo_cambio:
-                            st.success("✅ Recalculando... Aplicando cambios a los tableros generales.")
+                            st.success("✅ Recalculando... Aplicando cambios a la producción.")
                             st.rerun()
 
         # =====================================================================
