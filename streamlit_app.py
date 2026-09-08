@@ -470,32 +470,33 @@ else:
         if "correcciones_cadencia" not in st.session_state:
             st.session_state["correcciones_cadencia"] = {}
 
-        # Generar clave única para inyectar correcciones
         df_daily_prod['Clave_Unica'] = df_daily_prod['Fecha_Str'] + "_" + df_daily_prod['Máquina'] + "_" + df_daily_prod['Producto']
         
-        # INYECTAR LAS CORRECCIONES EN LA BASE DE DATOS TEMPORAL
+        # Inyectar correcciones
         for clave, nuevo_ph in st.session_state["correcciones_cadencia"].items():
             if nuevo_ph > 0:
                 nuevo_tc = 60 / nuevo_ph
                 df_daily_prod.loc[df_daily_prod['Clave_Unica'] == clave, 'TC'] = nuevo_tc
 
-        # ====================================================================================
-        # RECALCULAR DF_PRODUCTOS (RESUMEN GENERAL) BASADO EN LAS CORRECCIONES HECHAS POR DÍA
-        # ====================================================================================
+        # Recalcular el df_productos global para que el resumen se vea afectado por las correcciones diarias
         df_daily_prod['Pzas_Est_Dia'] = np.where(df_daily_prod['TC'] > 0, (df_daily_prod['Tiempo_Min'] / df_daily_prod['TC']), 0)
-        df_productos = df_daily_prod.groupby(['Máquina', 'Producto', 'Simultaneo_Con']).agg({
+        
+        # --- AQUÍ ESTABA EL ERROR: Agrupamos usando 'N' primero ---
+        df_productos = df_daily_prod.groupby(['Máquina', 'Producto', 'N']).agg({
             'Tiempo_Min': 'sum',
             'Pzas_Prod': 'sum',
             'Pzas_Est_Dia': 'sum'
         }).reset_index()
+        
+        # --- Y luego lo renombramos correctamente a 'Simultaneo_Con' ---
+        df_productos.rename(columns={'N': 'Simultaneo_Con'}, inplace=True)
+        
         df_productos['Tiempo_Hs'] = df_productos['Tiempo_Min'] / 60.0
-        # TC Promedio Ponderado para el resumen general
         df_productos['TC'] = np.where(df_productos['Pzas_Est_Dia'] > 0, df_productos['Tiempo_Min'] / df_productos['Pzas_Est_Dia'], 0)
         
         maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
         
-        # --- CREACIÓN DE LAS 3 PESTAÑAS ---
-        tab1, tab2, tab3 = st.tabs(["📊 Dashboard de Máquina", "🛠️ Editor Masivo de Cadencias", "📄 Exportación PDF"])
+        tab1, tab3, tab2 = st.tabs(["📊 Dashboard de Máquina", "🛠️ Editor Masivo de Cadencias", "📄 Exportación PDF"])
 
         # =====================================================================
         # PESTAÑA 1: VISUALIZACIÓN WEB DE SÓLO LECTURA
@@ -581,9 +582,9 @@ else:
                 )
 
         # =====================================================================
-        # PESTAÑA 2: EDITOR MASIVO DE CADENCIAS 
+        # PESTAÑA 3: EDITOR MASIVO DE CADENCIAS 
         # =====================================================================
-        with tab2:
+        with tab3:
             st.markdown("### 🛠️ Editor Consolidado de Piezas por Hora")
             st.write("En esta tabla puedes ver **todas las máquinas y todos los días**. Utiliza las lupas en las cabeceras de columna para buscar datos específicos. Al modificar la columna ✏️ **'PH Objetivo (Editable)'** y presionar **Enter**, el sistema recalculará los Tiempos de Ciclo y el Rendimiento en todos los gráficos y PDFs generados.")
             
@@ -646,9 +647,9 @@ else:
                 st.rerun()
 
         # =====================================================================
-        # PESTAÑA 3: MENÚ DE EXPORTACIÓN A PDF
+        # PESTAÑA 2: MENÚ DE EXPORTACIÓN A PDF
         # =====================================================================
-        with tab3:
+        with tab2:
             st.markdown("### 📄 Configuración de Reportes PDF")
             st.info("💡 **Nota:** Los reportes PDF se generarán aplicando todas las correcciones que hayas realizado en la pestaña del **Editor Masivo**.")
             
@@ -699,6 +700,7 @@ else:
                                 )
                     
                     if ("2" in opcion_reporte or "3" in opcion_reporte) and maquinas_a_procesar:
+                        # Pasamos df_daily_prod que YA TIENE las correcciones de TC inyectadas
                         archivos_evo = generar_evolutivo_master(df_daily_prod, maquinas_a_procesar, modo_descarga, intervalo_str)
                         
                         for arch in archivos_evo:
