@@ -160,9 +160,7 @@ def procesar_datos_eventos_tc(df_e, df_s):
         'T_Prod': 'sum', 'T_Parada': 'sum', 'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum'
     }).reset_index()
     
-    # ====================================================
     # FILTRO: DESCARTAR REGISTROS CON < 1 MINUTO Y 0 PIEZAS
-    # ====================================================
     df_daily_prod['Pzas_Filtro'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
     df_daily_prod = df_daily_prod[(df_daily_prod['T_Prod'] >= 1.0) & (df_daily_prod['Pzas_Filtro'] > 0)].copy()
     df_daily_prod.drop(columns=['Pzas_Filtro'], inplace=True)
@@ -246,9 +244,9 @@ def generar_pdf_produccion(maquinas, df_productos, intervalo_str):
                 pdf.cell(15, 6, f"{r['Tiempo_Hs']:.2f}", 1, 0, 'C')
                 pdf.cell(15, 6, f"{r.get('T_Parada_Hs', 0):.2f}", 1, 0, 'C')
                 pdf.cell(14, 6, f"{r.get('Disponibilidad (%)', 0):.1f}%", 1, 0, 'C')
-                pdf.cell(14, 6, str(int(r.get('Buenas_Edit', 0))), 1, 0, 'C')
-                pdf.cell(12, 6, str(int(r.get('RT_Edit', 0))), 1, 0, 'C')
-                pdf.cell(12, 6, str(int(r.get('Scrap_Edit', 0))), 1, 0, 'C')
+                pdf.cell(14, 6, str(int(r.get('Buenas', 0))), 1, 0, 'C')
+                pdf.cell(12, 6, str(int(r.get('RT', 0))), 1, 0, 'C')
+                pdf.cell(12, 6, str(int(r.get('Scrap', 0))), 1, 0, 'C')
                 pdf.cell(18, 6, f"{ph_real:.1f}", 1, 0, 'C')
                 pdf.cell(18, 6, f"{r.get('TC', 0):.4f}", 1, 0, 'C')
                 pdf.cell(18, 6, f"{ph_est:.1f}", 1, 0, 'C')
@@ -268,7 +266,7 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     df_daily = df_daily_prod[df_daily_prod['Máquina'].str.upper() == maquina_seleccionada.upper()].copy()
     if df_daily.empty: return False
 
-    df_daily = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({'Tiempo_Min': 'sum', 'T_Parada': 'sum', 'Buenas_Edit': 'sum', 'RT_Edit': 'sum', 'Scrap_Edit': 'sum', 'Pzas_Prod': 'sum'}).reset_index()
+    df_daily = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({'Tiempo_Min': 'sum', 'T_Parada': 'sum', 'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum', 'Pzas_Prod': 'sum'}).reset_index()
     df_daily['Fecha_DT'] = pd.to_datetime(df_daily['Fecha_Str'])
     df_daily = df_daily.sort_values(by=['Fecha_DT', 'Producto'])
 
@@ -330,9 +328,9 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
         pdf.cell(12, 6, f"{r['Tiempo_Hs']:.1f}", 1, 0, 'C')
         pdf.cell(12, 6, f"{r['T_Parada_Hs']:.1f}", 1, 0, 'C')
         pdf.cell(13, 6, f"{r['Disp']:.0f}%", 1, 0, 'C')
-        pdf.cell(12, 6, str(int(r['Buenas_Edit'])), 1, 0, 'C')
-        pdf.cell(10, 6, str(int(r['RT_Edit'])), 1, 0, 'C')
-        pdf.cell(10, 6, str(int(r['Scrap_Edit'])), 1, 0, 'C')
+        pdf.cell(12, 6, str(int(r['Buenas'])), 1, 0, 'C')
+        pdf.cell(10, 6, str(int(r['RT'])), 1, 0, 'C')
+        pdf.cell(10, 6, str(int(r['Scrap'])), 1, 0, 'C')
         pdf.cell(14, 6, f"{r['PH_Real']:.1f}", 1, 0, 'C')
         pdf.cell(14, 6, f"{r['PH_Est']:.1f}", 1, 0, 'C')
 
@@ -391,38 +389,20 @@ else:
             df_e_raw = pd.read_csv(uploaded_e) if uploaded_e.name.endswith('.csv') else pd.read_excel(uploaded_e)
             df_s_raw = pd.read_csv(uploaded_s) if uploaded_s.name.endswith('.csv') else pd.read_excel(uploaded_s)
             
-            df_prod_master, df_daily_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
+            df_prod_master, df_daily_prod_base, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
 
-        # --- SISTEMA DE MEMORIA GLOBAL BLINDADO ---
-        if "correcciones_cadencia" not in st.session_state:
-            st.session_state["correcciones_cadencia"] = {}
-
+        # Usamos df_daily_prod para los cálculos en caliente (sin memoria entre recargas)
+        df_daily_prod = df_daily_prod_base.copy()
         df_daily_prod['Clave_Unica'] = df_daily_prod['Fecha_Str'] + "_" + df_daily_prod['Máquina'] + "_" + df_daily_prod['Producto']
-        
-        # INYECTAR LAS CORRECCIONES EN LA BASE DE DATOS TEMPORAL
-        df_daily_prod['Buenas_Edit'] = df_daily_prod['Buenas']
-        df_daily_prod['RT_Edit'] = df_daily_prod['RT']
-        df_daily_prod['Scrap_Edit'] = df_daily_prod['Scrap']
-
-        for clave, edits in st.session_state["correcciones_cadencia"].items():
-            if isinstance(edits, dict):
-                mask = df_daily_prod['Clave_Unica'] == clave
-                df_daily_prod.loc[mask, 'Buenas_Edit'] = edits.get('Buenas', 0)
-                df_daily_prod.loc[mask, 'RT_Edit'] = edits.get('RT', 0)
-                df_daily_prod.loc[mask, 'Scrap_Edit'] = edits.get('Scrap', 0)
-
-        # El Pzas_Prod oficial ahora es la suma de los campos editados
-        df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas_Edit'] + df_daily_prod['RT_Edit'] + df_daily_prod['Scrap_Edit']
 
         # ====================================================================================
-        # RECALCULAR DF_PRODUCTOS (RESUMEN GENERAL) BASADO EN LAS CORRECCIONES
+        # DF_PRODUCTOS (RESUMEN GENERAL DE TODA LA MÁQUINA)
         # ====================================================================================
         df_daily_prod['Pzas_Est_Dia'] = np.where(df_daily_prod['TC'] > 0, (df_daily_prod['Tiempo_Min'] / df_daily_prod['TC']), 0)
         df_productos = df_daily_prod.groupby(['Máquina', 'Producto', 'N']).agg({
             'Tiempo_Min': 'sum',
             'T_Parada': 'sum',
             'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum',
-            'Buenas_Edit': 'sum', 'RT_Edit': 'sum', 'Scrap_Edit': 'sum',
             'Pzas_Prod': 'sum',
             'Pzas_Est_Dia': 'sum'
         }).reset_index()
@@ -431,7 +411,6 @@ else:
         df_productos['Tiempo_Hs'] = df_productos['Tiempo_Min'] / 60.0
         df_productos['T_Parada_Hs'] = df_productos['T_Parada'] / 60.0
         
-        # Disponibilidad = T_Prod / (T_Prod + T_Parada)
         df_productos['Disponibilidad (%)'] = np.where((df_productos['Tiempo_Min'] + df_productos['T_Parada']) > 0, 
                                                       (df_productos['Tiempo_Min'] / (df_productos['Tiempo_Min'] + df_productos['T_Parada'])) * 100, 0)
 
@@ -461,11 +440,11 @@ else:
                 
                 df_m_prod.rename(columns={'TC': 'TC Ingenieria'}, inplace=True)
                 
-                tabla_mostrar = df_m_prod[['Producto', 'Simultaneo_Con', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas_Edit', 'RT_Edit', 'Scrap_Edit', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].copy()
+                tabla_mostrar = df_m_prod[['Producto', 'Simultaneo_Con', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas', 'RT', 'Scrap', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].copy()
                 st.dataframe(
                     tabla_mostrar.style.format({
                         'Tiempo_Hs': '{:.2f}', 'T_Parada_Hs': '{:.2f}', 'Disponibilidad (%)': '{:.1f}%',
-                        'Buenas_Edit': '{:,.0f}', 'RT_Edit': '{:,.0f}', 'Scrap_Edit': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
+                        'Buenas': '{:,.0f}', 'RT': '{:,.0f}', 'Scrap': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
                         'PH Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance (%)': '{:.1f}%'
                     }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
                     use_container_width=True, hide_index=True
@@ -510,13 +489,13 @@ else:
                 
                 df_diario_ui.rename(columns={'TC': 'TC Ingenieria'}, inplace=True)
 
-                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas_Edit', 'RT_Edit', 'Scrap_Edit', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].iloc[::-1].reset_index(drop=True)
+                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas', 'RT', 'Scrap', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].iloc[::-1].reset_index(drop=True)
                 
-                st.info("💡 Si deseas editar la producción y que los cálculos se actualicen, ve a la pestaña **'🛠️ Editor Masivo por Planta'**.")
+                st.info("💡 Si deseas editar la producción y generar reportes modificados, ve a la pestaña **'🛠️ Editor Masivo por Planta'**.")
                 st.dataframe(
                     tabla_diaria.style.format({
                         'Tiempo_Hs': '{:.2f}', 'T_Parada_Hs': '{:.2f}', 'Disponibilidad (%)': '{:.1f}%',
-                        'Buenas_Edit': '{:,.0f}', 'RT_Edit': '{:,.0f}', 'Scrap_Edit': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
+                        'Buenas': '{:,.0f}', 'RT': '{:,.0f}', 'Scrap': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
                         'PH Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance (%)': '{:.1f}%'
                     }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
                     use_container_width=True, hide_index=True
@@ -527,7 +506,7 @@ else:
         # =====================================================================
         with tab2:
             st.markdown("### 🛠️ Corrección de Producción (Por Planta)")
-            st.write("Edita las **Piezas Buenas, RT o Scrap** de cada día. El sistema recalculará automáticamente la Pieza/Hora Real, el TC Real y la Performance.")
+            st.write("Edita las **Piezas Buenas, RT o Scrap** de cada día en tiempo real. **NOTA:** Los datos editados aquí no se guardarán al salir o recargar la página principal (F5), por lo que debes exportar tus Excels o PDFs antes de salir.")
             
             df_edit_global = df_daily_prod.copy()
             df_edit_global['Fecha'] = pd.to_datetime(df_edit_global['Fecha_Str']).dt.strftime('%d/%m/%Y')
@@ -541,6 +520,10 @@ else:
             
             plantas_disp = sorted(df_edit_global['Fábrica'].unique())
             
+            # MEMORIA LIGERA SOLO PARA ESTA SESION DEL EDITOR (Evita que el st.data_editor se resetee tontamente)
+            if "ediciones_temp_editor" not in st.session_state:
+                st.session_state["ediciones_temp_editor"] = {}
+
             if plantas_disp:
                 tabs_plantas = st.tabs([f"🏭 Planta: {p}" for p in plantas_disp])
                 
@@ -548,24 +531,30 @@ else:
                     with tabs_plantas[idx]:
                         df_planta = df_edit_global[df_edit_global['Fábrica'] == planta].copy()
                         
-                        # Definir la estructura visual
                         tabla_masiva = df_planta[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas', 'RT', 'Scrap', 'TC Ingenieria', 'PH_Est']].copy()
                         
-                        # Inyectar las columnas Editables
-                        tabla_masiva['Buenas (✏️)'] = df_planta['Buenas_Edit']
-                        tabla_masiva['RT (✏️)'] = df_planta['RT_Edit']
-                        tabla_masiva['Scrap (✏️)'] = df_planta['Scrap_Edit']
+                        # Inyectar estado inicial o el editado
+                        tabla_masiva['Buenas (✏️)'] = df_planta['Buenas']
+                        tabla_masiva['RT (✏️)'] = df_planta['RT']
+                        tabla_masiva['Scrap (✏️)'] = df_planta['Scrap']
+
+                        for idx_row, row in tabla_masiva.iterrows():
+                            clave = row['Clave_Unica']
+                            if clave in st.session_state["ediciones_temp_editor"]:
+                                tabla_masiva.at[idx_row, 'Buenas (✏️)'] = st.session_state["ediciones_temp_editor"][clave]['B']
+                                tabla_masiva.at[idx_row, 'RT (✏️)'] = st.session_state["ediciones_temp_editor"][clave]['R']
+                                tabla_masiva.at[idx_row, 'Scrap (✏️)'] = st.session_state["ediciones_temp_editor"][clave]['S']
                         
-                        # Realizar los cálculos sobre esas columnas editables
+                        # Realizar los cálculos dinámicos
                         tabla_masiva['Total Editado'] = tabla_masiva['Buenas (✏️)'] + tabla_masiva['RT (✏️)'] + tabla_masiva['Scrap (✏️)']
                         tabla_masiva['PH Real'] = np.where(tabla_masiva['Tiempo_Hs'] > 0, tabla_masiva['Total Editado'] / tabla_masiva['Tiempo_Hs'], 0)
                         tabla_masiva['TC Real'] = np.where(tabla_masiva['PH Real'] > 0, 60 / tabla_masiva['PH Real'], 0)
                         tabla_masiva['Performance Real (%)'] = np.where(tabla_masiva['PH_Est'] > 0, (tabla_masiva['PH Real'] / tabla_masiva['PH_Est']) * 100, 0)
                         
-                        # Reordenar las columnas
+                        # Reordenar las columnas visualmente
                         tabla_masiva = tabla_masiva[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas', 'RT', 'Scrap', 'Buenas (✏️)', 'RT (✏️)', 'Scrap (✏️)', 'Total Editado', 'TC Ingenieria', 'PH_Est', 'PH Real', 'TC Real', 'Performance Real (%)']]
 
-                        st.info(f"Mostrando datos de: **{planta}**. Al modificar las casillas con ✏️, presiona Enter para ver el impacto.")
+                        st.info(f"Mostrando datos de: **{planta}**. Edita las casillas ✏️.")
                         
                         edited_df = st.data_editor(
                             tabla_masiva.style.format({
@@ -600,7 +589,7 @@ else:
                             key=f"editor_{planta}"
                         )
                         
-                        # Detectar y guardar cambios
+                        # Detectar y guardar cambios al instante para el refresco del componente
                         hubo_cambio = False
                         for index, row in edited_df.iterrows():
                             b_act = row['Buenas (✏️)']
@@ -608,22 +597,12 @@ else:
                             s_act = row['Scrap (✏️)']
                             clave = row['Clave_Unica']
                             
-                            b_orig = row['Buenas']
-                            rt_orig = row['RT']
-                            s_orig = row['Scrap']
-                            
-                            mem = st.session_state["correcciones_cadencia"].get(clave, {})
-                            
-                            if (b_act != b_orig or rt_act != rt_orig or s_act != s_orig) or (clave in st.session_state["correcciones_cadencia"]):
-                                if isinstance(mem, dict):
-                                    if mem.get('Buenas') != b_act or mem.get('RT') != rt_act or mem.get('Scrap') != s_act:
-                                        st.session_state["correcciones_cadencia"][clave] = {'Buenas': b_act, 'RT': rt_act, 'Scrap': s_act}
-                                        hubo_cambio = True
-                                else:
-                                    st.session_state["correcciones_cadencia"][clave] = {'Buenas': b_act, 'RT': rt_act, 'Scrap': s_act}
-                                    hubo_cambio = True
+                            mem = st.session_state["ediciones_temp_editor"].get(clave, {})
+                            if mem.get('B') != b_act or mem.get('R') != rt_act or mem.get('S') != s_act:
+                                st.session_state["ediciones_temp_editor"][clave] = {'B': b_act, 'R': rt_act, 'S': s_act}
+                                hubo_cambio = True
 
-                        # Sistema de Descarga Excel Exclusivo por Planta
+                        # Sistema de Descarga Excel Exclusivo
                         st.markdown("---")
                         col_dl1, col_dl2 = st.columns([1, 4])
                         with col_dl1:
@@ -679,7 +658,6 @@ else:
                                 )
 
                         if hubo_cambio:
-                            st.success("✅ Recalculando... Aplicando cambios a la producción.")
                             st.rerun()
 
         # =====================================================================
@@ -687,8 +665,40 @@ else:
         # =====================================================================
         with tab3:
             st.markdown("### 📄 Configuración de Reportes PDF")
-            st.info("💡 **Nota:** Los reportes PDF se generarán aplicando todas las correcciones que hayas realizado en la pestaña del **Editor Masivo**.")
+            st.info("💡 **Nota:** Si generaste correcciones en el 'Editor', los reportes PDF se descargarán reflejando esa nueva producción y performance.")
             
+            # Aplicar temporalmente los datos editados al motor del PDF
+            df_pdf_data = df_daily_prod.copy()
+            df_pdf_data['Buenas_Edit'] = df_pdf_data['Buenas']
+            df_pdf_data['RT_Edit'] = df_pdf_data['RT']
+            df_pdf_data['Scrap_Edit'] = df_pdf_data['Scrap']
+            
+            if "ediciones_temp_editor" in st.session_state:
+                for clave, edits in st.session_state["ediciones_temp_editor"].items():
+                    mask = df_pdf_data['Clave_Unica'] == clave
+                    df_pdf_data.loc[mask, 'Buenas_Edit'] = edits.get('B', 0)
+                    df_pdf_data.loc[mask, 'RT_Edit'] = edits.get('R', 0)
+                    df_pdf_data.loc[mask, 'Scrap_Edit'] = edits.get('S', 0)
+
+            df_pdf_data['Pzas_Prod'] = df_pdf_data['Buenas_Edit'] + df_pdf_data['RT_Edit'] + df_pdf_data['Scrap_Edit']
+            
+            df_productos_pdf = df_pdf_data.groupby(['Máquina', 'Producto', 'N']).agg({
+                'Tiempo_Min': 'sum', 'T_Parada': 'sum',
+                'Buenas_Edit': 'sum', 'RT_Edit': 'sum', 'Scrap_Edit': 'sum',
+                'Pzas_Prod': 'sum'
+            }).reset_index()
+            
+            df_productos_pdf.rename(columns={'N': 'Simultaneo_Con'}, inplace=True)
+            df_productos_pdf['Tiempo_Hs'] = df_productos_pdf['Tiempo_Min'] / 60.0
+            df_productos_pdf['T_Parada_Hs'] = df_productos_pdf['T_Parada'] / 60.0
+            df_productos_pdf['Disponibilidad (%)'] = np.where((df_productos_pdf['Tiempo_Min'] + df_productos_pdf['T_Parada']) > 0, 
+                                                          (df_productos_pdf['Tiempo_Min'] / (df_productos_pdf['Tiempo_Min'] + df_productos_pdf['T_Parada'])) * 100, 0)
+            
+            # Cruzar con TC
+            df_productos_pdf = df_productos_pdf.merge(df_s_min, left_on='Producto', right_on=col_cod, how='left')
+            df_productos_pdf.rename(columns={col_tc: 'TC'}, inplace=True)
+            df_productos_pdf['TC'] = df_productos_pdf['TC'].fillna(0.0)
+
             opcion_reporte = st.radio(
                 "Selecciona qué reporte deseas generar:", 
                 ["1. Reporte General (Torta, Producto y Operario)", 
@@ -718,8 +728,8 @@ else:
                 with st.spinner("Construyendo archivos PDF..."):
                     
                     if ("1" in opcion_reporte or "3" in opcion_reporte):
-                        maqs_general = sorted(df_productos['Máquina'].unique())
-                        res_gen = generar_pdf_produccion(maqs_general, df_productos, intervalo_str)
+                        maqs_general = sorted(df_productos_pdf['Máquina'].unique())
+                        res_gen = generar_pdf_produccion(maqs_general, df_productos_pdf, intervalo_str)
                         
                         if res_gen:
                             st.success(f"✅ Reporte General Generado.")
@@ -731,7 +741,7 @@ else:
                             )
                     
                     if ("2" in opcion_reporte or "3" in opcion_reporte) and maquinas_a_procesar:
-                        archivos_evo = generar_evolutivo_master(df_daily_prod, maquinas_a_procesar, modo_descarga, intervalo_str)
+                        archivos_evo = generar_evolutivo_master(df_pdf_data, maquinas_a_procesar, modo_descarga, intervalo_str)
                         
                         for arch in archivos_evo:
                             if os.path.exists(arch):
