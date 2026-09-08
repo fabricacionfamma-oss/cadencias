@@ -84,8 +84,25 @@ def procesar_datos_eventos_tc(df_e, df_s):
 
     df_e['Máquina_Base'] = df_e[ce_maq].astype(str).str.strip().str.upper()
     df_e['Máquina_Consol'] = df_e['Máquina_Base'].replace(r'(?i).*15.*', 'CELDA 15', regex=True)
+
+    # --- CORRECCIÓN ROBUSTA DE FECHAS ---
+    # 1. Intenta parsear priorizando Día/Mes/Año
     df_e['Fecha_Inicio_DT'] = pd.to_datetime(df_e[ce_fec_ini], errors='coerce', dayfirst=True)
     df_e['Fecha_Fin_DT'] = pd.to_datetime(df_e[ce_fec_fin], errors='coerce', dayfirst=True)
+    
+    # 2. Si quedaron nulos (NaT) por formato cruzado, intenta dejar que pandas lo infiera
+    mask_ini_nat = df_e['Fecha_Inicio_DT'].isna()
+    if mask_ini_nat.any():
+        df_e.loc[mask_ini_nat, 'Fecha_Inicio_DT'] = pd.to_datetime(df_e.loc[mask_ini_nat, ce_fec_ini], errors='coerce')
+        
+    mask_fin_nat = df_e['Fecha_Fin_DT'].isna()
+    if mask_fin_nat.any():
+        df_e.loc[mask_fin_nat, 'Fecha_Fin_DT'] = pd.to_datetime(df_e.loc[mask_fin_nat, ce_fec_fin], errors='coerce')
+    
+    # Eliminar filas donde la fecha definitivamente no se pudo leer
+    df_e = df_e.dropna(subset=['Fecha_Inicio_DT']).copy()
+    # ------------------------------------
+
     df_e['Fecha_Str'] = df_e['Fecha_Inicio_DT'].dt.strftime('%Y-%m-%d')
     df_e['Mid_DT'] = df_e['Fecha_Inicio_DT'] + (df_e['Fecha_Fin_DT'] - df_e['Fecha_Inicio_DT']) / 2
 
@@ -138,7 +155,7 @@ def procesar_datos_eventos_tc(df_e, df_s):
             })
 
     df_prod_master = pd.DataFrame(prod_data)
-    if df_prod_master.empty: raise ValueError("No se encontraron productos válidos en el archivo.")
+    if df_prod_master.empty: raise ValueError("No se encontraron productos válidos en el archivo de Eventos.")
 
     df_daily_prod = df_prod_master.groupby(['Fecha_Str', 'Máquina_Consol', 'Producto', 'N']).agg({
         'Tiempo_Min': 'sum', 'Pzas_Prod': 'sum'
@@ -216,13 +233,6 @@ def procesar_datos_eventos_tc(df_e, df_s):
     return df_global_res, df_productos_res, df_operarios_res, df_daily_prod, intervalo_str
 
 # ==========================================
-# (Aquí mantienes las funciones PDF originales si quieres usarlas en la Pestaña 2)
-# def generar_pdf_produccion(...)
-# def generar_pagina_evolutivo(...)
-# def generar_evolutivo_master(...)
-# ==========================================
-
-# ==========================================
 # 5. STREAMLIT APP UI
 # ==========================================
 st.set_page_config(page_title="Análisis de Cadencias", layout="wide", page_icon="⚙️")
@@ -239,7 +249,7 @@ if not (uploaded_e and uploaded_s):
     st.info("👈 Por favor, carga los archivos de Excel/CSV en el panel lateral para visualizar las cadencias.")
 else:
     try:
-        with st.spinner('Procesando datos y cruzando tiempos de ciclo...'):
+        with st.spinner('Procesando datos, unificando fechas y cruzando tiempos de ciclo...'):
             df_e_raw = pd.read_csv(uploaded_e) if uploaded_e.name.endswith('.csv') else pd.read_excel(uploaded_e)
             df_s_raw = pd.read_csv(uploaded_s) if uploaded_s.name.endswith('.csv') else pd.read_excel(uploaded_s)
             
@@ -247,22 +257,19 @@ else:
 
         maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
         
-        tab1, tab2 = st.tabs(["📊 Vista Detallada (Estilo PDF)", "📄 Exportación PDF"])
+        tab1, tab2 = st.tabs(["📊 Vista Detallada de Máquina", "📄 Exportación PDF"])
 
-        # --- PESTAÑA 1: VISUALIZACIÓN ENFOCADA EN CADENCIA (ESTILO PDF) ---
+        # --- PESTAÑA 1: VISUALIZACIÓN ENFOCADA EN CADENCIA ---
         with tab1:
             st.markdown(f"**{intervalo_str}**")
             
-            # Selector único de máquina (como ver una página del PDF)
             maq_sel = st.selectbox("📌 Seleccione la Máquina a evaluar:", maquinas_disp)
-            
             st.divider()
             
-            # Título de Página 
             st.markdown(f"<h2 style='text-align: center; color: #004286;'>MÁQUINA: {maq_sel}</h2>", unsafe_allow_html=True)
             
-            # 1. GRAFICO DE TORTA (SIMULTANEIDAD)
-            st.markdown("#### 1. Distribución de Tiempo (Hs)")
+            # 1. GRAFICO DE TORTA
+            st.markdown("#### 1. Distribución de Tiempo Total (Hs)")
             df_maq_global = df_global[df_global['Máquina'] == maq_sel].copy()
             
             if not df_maq_global.empty:
@@ -274,62 +281,80 @@ else:
                 ax_pie.axis('equal')
                 st.pyplot(fig_pie)
             
-            # 2. TABLA DE CADENCIAS POR PRODUCTO
-            st.markdown("#### 2. Detalle de Producción y Cadencia")
+            # 2. TABLA RESUMEN POR PRODUCTO
+            st.markdown("#### 2. Resumen General por Producto")
             df_m_prod = df_productos[df_productos['Máquina'] == maq_sel].copy()
             
             if not df_m_prod.empty:
-                # Cálculos de Cadencia
                 df_m_prod['PH_Real'] = np.where(df_m_prod['Tiempo_Hs'] > 0, df_m_prod['Pzas_Prod'] / df_m_prod['Tiempo_Hs'], 0)
                 df_m_prod['PH_Est'] = np.where(df_m_prod['TC'] > 0, 60 / df_m_prod['TC'], 0)
                 df_m_prod['Eficiencia (%)'] = np.where(df_m_prod['PH_Est'] > 0, (df_m_prod['PH_Real'] / df_m_prod['PH_Est']) * 100, 0)
                 
-                # Formatear tabla para mostrar
                 tabla_mostrar = df_m_prod[['Producto', 'Simultaneo_Con', 'Tiempo_Hs', 'Pzas_Prod', 'TC', 'PH_Real', 'PH_Est', 'Eficiencia (%)']].copy()
                 
                 st.dataframe(
                     tabla_mostrar.style.format({
-                        'Tiempo_Hs': '{:.2f}',
-                        'Pzas_Prod': '{:,.0f}',
-                        'TC': '{:.2f}',
-                        'PH_Real': '{:.1f}',
-                        'PH_Est': '{:.1f}',
-                        'Eficiencia (%)': '{:.1f}%'
+                        'Tiempo_Hs': '{:.2f}', 'Pzas_Prod': '{:,.0f}', 'TC': '{:.2f}',
+                        'PH_Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Eficiencia (%)': '{:.1f}%'
                     }).background_gradient(subset=['Eficiencia (%)'], cmap='RdYlGn', vmin=50, vmax=100),
                     use_container_width=True, hide_index=True
                 )
                 
-            # 3. GRÁFICO EVOLUTIVO DIARIO DE CADENCIA
+            # 3. GRÁFICO EVOLUTIVO DIARIO
             st.markdown("#### 3. Evolutivo Diario de Cadencia (PH Real)")
             df_daily = df_daily_prod[df_daily_prod['Máquina'] == maq_sel].copy()
             
             if not df_daily.empty:
-                df_daily = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({
+                df_daily_grp = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({
                     'Tiempo_Min': 'sum', 'Pzas_Prod': 'sum'
                 }).reset_index()
 
-                df_daily['Fecha_DT'] = pd.to_datetime(df_daily['Fecha_Str'])
-                df_daily = df_daily.sort_values(by=['Fecha_DT', 'Producto'])
+                df_daily_grp['Fecha_DT'] = pd.to_datetime(df_daily_grp['Fecha_Str'])
+                df_daily_grp = df_daily_grp.sort_values(by=['Fecha_DT', 'Producto'])
 
-                df_daily['Tiempo_Hs'] = df_daily['Tiempo_Min'] / 60.0
-                df_daily['PH_Real'] = np.where(df_daily['Tiempo_Hs'] > 0, df_daily['Pzas_Prod'] / df_daily['Tiempo_Hs'], 0)
+                df_daily_grp['Tiempo_Hs'] = df_daily_grp['Tiempo_Min'] / 60.0
+                df_daily_grp['PH_Real'] = np.where(df_daily_grp['Tiempo_Hs'] > 0, df_daily_grp['Pzas_Prod'] / df_daily_grp['Tiempo_Hs'], 0)
+                df_daily_grp['PH_Est'] = np.where(df_daily_grp['TC'] > 0, 60 / df_daily_grp['TC'], 0)
                 
                 fig_line, ax_line = plt.subplots(figsize=(10, 4))
-                for prod in df_daily['Producto'].unique():
-                    df_p = df_daily[df_daily['Producto'] == prod]
+                for prod in df_daily_grp['Producto'].unique():
+                    df_p = df_daily_grp[df_daily_grp['Producto'] == prod]
                     ax_line.plot(df_p['Fecha_DT'], df_p['PH_Real'], marker='o', label=str(prod)[:25])
 
                 ax_line.set_ylabel("Piezas / Hora (Real)")
                 ax_line.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
                 plt.xticks(rotation=45)
                 ax_line.grid(True, linestyle='--', alpha=0.6)
-                
                 st.pyplot(fig_line)
+                
+                # 4. TABLA DETALLADA DÍA A DÍA
+                st.markdown("#### 4. Detalle Diario (Día a Día)")
+                
+                # Preparamos los datos para la tabla diaria (calculando eficiencia por día)
+                df_diario_ui = df_daily_grp.copy()
+                df_diario_ui['Eficiencia (%)'] = np.where(df_diario_ui['PH_Est'] > 0, (df_diario_ui['PH_Real'] / df_diario_ui['PH_Est']) * 100, 0)
+                
+                # Formatear la fecha para que sea legible en LatAm
+                df_diario_ui['Fecha'] = df_diario_ui['Fecha_DT'].dt.strftime('%d/%m/%Y')
+                
+                # Seleccionamos las columnas a mostrar
+                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'Pzas_Prod', 'TC', 'PH_Real', 'PH_Est', 'Eficiencia (%)']]
+                
+                # Ordenamos del día más reciente al más antiguo para mayor comodidad
+                tabla_diaria = tabla_diaria.iloc[::-1]
+                
+                st.dataframe(
+                    tabla_diaria.style.format({
+                        'Tiempo_Hs': '{:.2f}', 'Pzas_Prod': '{:,.0f}', 'TC': '{:.2f}',
+                        'PH_Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Eficiencia (%)': '{:.1f}%'
+                    }).background_gradient(subset=['Eficiencia (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                    use_container_width=True, hide_index=True
+                )
 
-        # --- PESTAÑA 2: EXPORTACIÓN PDF (Misma lógica que antes) ---
+        # --- PESTAÑA 2: EXPORTACIÓN PDF ---
         with tab2:
-            st.write("Aquí puedes conservar tus controles para exportar los PDFs masivos.")
-            # ... (AQUÍ PEGAS LA LÓGICA DE BOTONES DEL REPORTE ANTERIOR) ...
+            st.info("Las funciones para exportar PDFs masivos estarían ubicadas aquí.")
+            # [Lógica original de botones PDF]
 
     except Exception as e:
         st.error(f"Ocurrió un error al procesar la información: {str(e)}")
