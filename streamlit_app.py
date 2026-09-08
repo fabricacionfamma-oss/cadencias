@@ -161,9 +161,11 @@ def procesar_datos_eventos_tc(df_e, df_s):
     }).reset_index()
     
     # ====================================================
-    # FILTRO: DESCARTAR REGISTROS CON MENOS DE 1 MINUTO
+    # FILTRO: DESCARTAR REGISTROS CON < 1 MINUTO Y 0 PIEZAS
     # ====================================================
-    df_daily_prod = df_daily_prod[df_daily_prod['T_Prod'] >= 1.0].copy()
+    df_daily_prod['Pzas_Filtro'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
+    df_daily_prod = df_daily_prod[(df_daily_prod['T_Prod'] >= 1.0) & (df_daily_prod['Pzas_Filtro'] > 0)].copy()
+    df_daily_prod.drop(columns=['Pzas_Filtro'], inplace=True)
 
     df_daily_prod.rename(columns={'T_Prod': 'Tiempo_Min'}, inplace=True)
     df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
@@ -391,7 +393,7 @@ else:
             
             df_prod_master, df_daily_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
 
-        # --- SISTEMA DE MEMORIA GLOBAL (A prueba de formatos viejos) ---
+        # --- SISTEMA DE MEMORIA GLOBAL BLINDADO ---
         if "correcciones_cadencia" not in st.session_state:
             st.session_state["correcciones_cadencia"] = {}
 
@@ -613,7 +615,11 @@ else:
                             mem = st.session_state["correcciones_cadencia"].get(clave, {})
                             
                             if (b_act != b_orig or rt_act != rt_orig or s_act != s_orig) or (clave in st.session_state["correcciones_cadencia"]):
-                                if mem.get('Buenas') != b_act or mem.get('RT') != rt_act or mem.get('Scrap') != s_act:
+                                if isinstance(mem, dict):
+                                    if mem.get('Buenas') != b_act or mem.get('RT') != rt_act or mem.get('Scrap') != s_act:
+                                        st.session_state["correcciones_cadencia"][clave] = {'Buenas': b_act, 'RT': rt_act, 'Scrap': s_act}
+                                        hubo_cambio = True
+                                else:
                                     st.session_state["correcciones_cadencia"][clave] = {'Buenas': b_act, 'RT': rt_act, 'Scrap': s_act}
                                     hubo_cambio = True
 
