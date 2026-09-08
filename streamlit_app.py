@@ -6,6 +6,7 @@ from fpdf import FPDF
 import io
 import os
 import tempfile
+import matplotlib.dates as mdates
 
 # ==========================================
 # 0. FUNCIÓN DE LIMPIEZA DE TEXTO
@@ -21,7 +22,6 @@ class ReportePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
         self.set_text_color(0, 66, 134)
-        # Se quitó "FAMMA" del título del PDF
         self.cell(0, 10, 'Reporte de Eficiencia de Produccion', 0, 0, 'C')
         self.ln(10)
 
@@ -376,9 +376,11 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     ax.set_xlabel("Fechas de Produccion")
     ax.set_ylabel("Piezas / Hora (Real)")
 
+    # Formateo estricto de las fechas en el PDF (Día/Mes/Año)
     fechas_unicas = sorted(df_daily['Fecha_DT'].unique())
     ax.set_xticks(fechas_unicas)
-    ax.set_xticklabels([x.strftime('%d/%m/%Y') for x in fechas_unicas], rotation=45, ha='right', fontsize=7)
+    ax.set_xticklabels([pd.to_datetime(x).strftime('%d/%m/%Y') for x in fechas_unicas], rotation=45, ha='right', fontsize=7)
+    
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=7, title="Codigos")
     ax.grid(True, linestyle=':', alpha=0.6)
 
@@ -455,7 +457,6 @@ with st.sidebar:
     uploaded_e = st.file_uploader("📂 Archivo EVENTOS", type=['csv', 'xlsx'])
     uploaded_s = st.file_uploader("📂 Archivo TIEMPOS (Ciclo)", type=['csv', 'xlsx'])
 
-# Se quitó "FAMMA" del título de la aplicación web
 st.title("⚙️ Análisis de Cadencias y Eficiencia")
 
 if not (uploaded_e and uploaded_s):
@@ -524,8 +525,13 @@ else:
                     ax_line.plot(df_p['Fecha_DT'], df_p['PH_Real'], marker='o', label=str(prod)[:25])
 
                 ax_line.set_ylabel("Piezas / Hora (Real)")
+                
+                # CORRECCIÓN EN EL EJE X DE LA WEB PARA EVITAR LOS ".00" Y ".12"
+                fechas_unicas_web = sorted(df_daily_grp['Fecha_DT'].unique())
+                ax_line.set_xticks(fechas_unicas_web)
+                ax_line.set_xticklabels([pd.to_datetime(x).strftime('%d/%m/%Y') for x in fechas_unicas_web], rotation=45, ha='right')
+
                 ax_line.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
-                plt.xticks(rotation=45)
                 ax_line.grid(True, linestyle='--', alpha=0.6)
                 st.pyplot(fig_line)
                 
