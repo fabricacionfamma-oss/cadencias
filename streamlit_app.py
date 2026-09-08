@@ -138,8 +138,6 @@ def procesar_datos_eventos_tc(df_e, df_s):
     df_daily_prod = df_prod_master.groupby(['Fecha_Str', 'Máquina_Consol', 'Producto', 'N']).agg({
         'Tiempo_Min': 'sum', 'Pzas_Prod': 'sum'
     }).reset_index()
-    
-    # SE ELIMINÓ EL FILTRO DE TIEMPO >= 5 MINUTOS. AHORA TRAE TODAS LAS PIEZAS > 0 SIN IMPORTAR EL TIEMPO.
     df_daily_prod = df_daily_prod[df_daily_prod['Pzas_Prod'] > 0].copy()
 
     df_productos_res = df_daily_prod.groupby(['Máquina_Consol', 'Producto', 'N']).agg({
@@ -154,8 +152,6 @@ def procesar_datos_eventos_tc(df_e, df_s):
     df_daily_maq = df_e.groupby(['Fecha_Str', 'Máquina_Consol', 'N']).agg({
         'Tiempo_Maq_Global': 'sum', 'Pzas_Maq_Global': 'sum'
     }).reset_index()
-    
-    # TAMBIÉN SE ELIMINÓ EL FILTRO DE TIEMPO PARA LA MÁQUINA GLOBAL
     df_daily_maq = df_daily_maq[df_daily_maq['Pzas_Maq_Global'] > 0].copy()
 
     df_global_res = df_daily_maq.groupby(['Máquina_Consol', 'N']).agg({
@@ -486,78 +482,38 @@ else:
             st.markdown("#### 1. Distribución de Tiempo Total (Hs)")
             df_maq_global = df_global[df_global['Máquina'] == maq_sel].copy()
             if not df_maq_global.empty:
-                fig_pie, ax_pie = plt.subplots(figsize=(6, 3))
-                labels = [f"Simultáneo: {int(n)}" for n in df_maq_global['N']]
-                sizes = df_maq_global['Tiempo_Hs']
-                colores = ['#4A90E2', '#A3D9A5', '#339933', '#A9D0F5', '#E6A8D7']
-                ax_pie.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colores)
-                ax_pie.axis('equal')
-                st.pyplot(fig_pie)
+                # Columnas para achicar y centrar el gráfico de torta
+                col_pie1, col_pie2, col_pie3 = st.columns([1, 2, 1])
+                with col_pie2:
+                    fig_pie, ax_pie = plt.subplots(figsize=(4, 2.5))
+                    labels = [f"Simultáneo: {int(n)}" for n in df_maq_global['N']]
+                    sizes = df_maq_global['Tiempo_Hs']
+                    colores = ['#4A90E2', '#A3D9A5', '#339933', '#A9D0F5', '#E6A8D7']
+                    ax_pie.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colores)
+                    ax_pie.axis('equal')
+                    st.pyplot(fig_pie)
             
             st.markdown("#### 2. Resumen General por Producto")
             df_m_prod = df_productos[df_productos['Máquina'] == maq_sel].copy()
             if not df_m_prod.empty:
-                # 1. Cálculos Base
                 df_m_prod['PH Real Wiidem'] = np.where(df_m_prod['Tiempo_Hs'] > 0, df_m_prod['Pzas_Prod'] / df_m_prod['Tiempo_Hs'], 0)
                 df_m_prod['PH_Est'] = np.where(df_m_prod['TC'] > 0, 60 / df_m_prod['TC'], 0)
                 df_m_prod['Performance Wiidem (%)'] = np.where(df_m_prod['PH_Est'] > 0, (df_m_prod['PH Real Wiidem'] / df_m_prod['PH_Est']) * 100, 0)
                 
-                # Renombramientos solicitados
                 df_m_prod.rename(columns={
                     'Pzas_Prod': 'Piezas Prod Wiidem',
                     'TC': 'TC Ingenieria'
                 }, inplace=True)
                 
+                # Tabla General en formato solo lectura normal
                 tabla_mostrar = df_m_prod[['Producto', 'Simultaneo_Con', 'Tiempo_Hs', 'Piezas Prod Wiidem', 'TC Ingenieria', 'PH Real Wiidem', 'PH_Est', 'Performance Wiidem (%)']].copy()
                 
-                # Inicializar el campo input usando la PH Estimada como sugerencia predeterminada
-                tabla_mostrar['Pzas Hora Real (Editable)'] = tabla_mostrar['PH_Est'].round(1)
-
-                # Identificador único para el editor, atado a la máquina actual
-                editor_key = f"editor_cadencia_{maq_sel}"
-                
-                # Inyectar ediciones previas registradas en Session State ANTES de los cálculos
-                if editor_key in st.session_state:
-                    edits = st.session_state[editor_key].get("edited_rows", {})
-                    for row_idx_str, edit_dict in edits.items():
-                        if "Pzas Hora Real (Editable)" in edit_dict:
-                            row_idx = int(row_idx_str)
-                            tabla_mostrar.loc[row_idx, "Pzas Hora Real (Editable)"] = edit_dict["Pzas Hora Real (Editable)"]
-
-                # 2. Cálculos en base a la celda editable (TC = 60 / Pzas Hora Real)
-                tabla_mostrar['TC Real'] = np.where(tabla_mostrar['Pzas Hora Real (Editable)'] > 0, 60 / tabla_mostrar['Pzas Hora Real (Editable)'], 0)
-                tabla_mostrar['Performance Real (%)'] = np.where(tabla_mostrar['Pzas Hora Real (Editable)'] > 0, (tabla_mostrar['PH Real Wiidem'] / tabla_mostrar['Pzas Hora Real (Editable)']) * 100, 0)
-
-                st.info("💡 **Herramienta de Simulación Interactiva:** Modifica los valores en la columna ✏️ **'Pzas Hora Real (Editable)'** y presiona 'Enter' para ver cómo se recalculan automáticamente el *TC Real* y la *Performance Real* en la misma tabla.")
-                
-                # Mostrar el editor de tabla completo
-                st.data_editor(
+                st.dataframe(
                     tabla_mostrar.style.format({
                         'Tiempo_Hs': '{:.2f}', 'Piezas Prod Wiidem': '{:,.0f}', 'TC Ingenieria': '{:.2f}',
-                        'PH Real Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%',
-                        'Pzas Hora Real (Editable)': '{:.1f}', 'TC Real': '{:.2f}', 'Performance Real (%)': '{:.1f}%'
-                    }).background_gradient(subset=['Performance Wiidem (%)', 'Performance Real (%)'], cmap='RdYlGn', vmin=50, vmax=100),
-                    column_config={
-                        "Producto": st.column_config.Column(disabled=True),
-                        "Simultaneo_Con": st.column_config.Column(disabled=True),
-                        "Tiempo_Hs": st.column_config.NumberColumn(disabled=True),
-                        "Piezas Prod Wiidem": st.column_config.NumberColumn(disabled=True),
-                        "TC Ingenieria": st.column_config.NumberColumn(disabled=True),
-                        "PH Real Wiidem": st.column_config.NumberColumn(disabled=True),
-                        "PH_Est": st.column_config.NumberColumn(disabled=True),
-                        "Performance Wiidem (%)": st.column_config.NumberColumn(disabled=True),
-                        "TC Real": st.column_config.NumberColumn(disabled=True),
-                        "Performance Real (%)": st.column_config.NumberColumn(disabled=True),
-                        "Pzas Hora Real (Editable)": st.column_config.NumberColumn(
-                            "Pzas Hora Real (Editable ✏️)",
-                            help="Edita las piezas por hora para calcular tu TC y Performance",
-                            min_value=0.1,
-                            step=1.0
-                        )
-                    },
-                    use_container_width=True, 
-                    hide_index=True,
-                    key=editor_key
+                        'PH Real Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%'
+                    }).background_gradient(subset=['Performance Wiidem (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                    use_container_width=True, hide_index=True
                 )
                 
             st.markdown("#### 3. Evolutivo Diario de Cadencia (PH Real Wiidem)")
@@ -597,15 +553,55 @@ else:
                     'PH_Real': 'PH Real Wiidem'
                 }, inplace=True)
 
-                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'Piezas Prod Wiidem', 'TC Ingenieria', 'PH Real Wiidem', 'PH_Est', 'Performance Wiidem (%)']].iloc[::-1]
+                # Reset de índice necesario para que la edición funcione correctamente al revertir el orden
+                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'Piezas Prod Wiidem', 'TC Ingenieria', 'PH Real Wiidem', 'PH_Est', 'Performance Wiidem (%)']].iloc[::-1].reset_index(drop=True)
                 
-                st.dataframe(
+                # --- INICIO LÓGICA DE EDICIÓN DIARIA ---
+                tabla_diaria['Pzas Hora Real (Editable)'] = tabla_diaria['PH_Est'].round(1)
+
+                editor_key_diario = f"editor_cadencia_diaria_{maq_sel}"
+                
+                if editor_key_diario in st.session_state:
+                    edits = st.session_state[editor_key_diario].get("edited_rows", {})
+                    for row_idx_str, edit_dict in edits.items():
+                        if "Pzas Hora Real (Editable)" in edit_dict:
+                            row_idx = int(row_idx_str)
+                            tabla_diaria.loc[row_idx, "Pzas Hora Real (Editable)"] = edit_dict["Pzas Hora Real (Editable)"]
+
+                tabla_diaria['TC Real'] = np.where(tabla_diaria['Pzas Hora Real (Editable)'] > 0, 60 / tabla_diaria['Pzas Hora Real (Editable)'], 0)
+                tabla_diaria['Performance Real (%)'] = np.where(tabla_diaria['Pzas Hora Real (Editable)'] > 0, (tabla_diaria['PH Real Wiidem'] / tabla_diaria['Pzas Hora Real (Editable)']) * 100, 0)
+
+                st.info("💡 **Herramienta de Simulación Diaria:** Modifica los valores en la columna ✏️ **'Pzas Hora Real (Editable)'** para recalcular el *TC Real* y la *Performance Real* específica de ese día.")
+                
+                st.data_editor(
                     tabla_diaria.style.format({
                         'Tiempo_Hs': '{:.2f}', 'Piezas Prod Wiidem': '{:,.0f}', 'TC Ingenieria': '{:.2f}',
-                        'PH Real Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%'
-                    }).background_gradient(subset=['Performance Wiidem (%)'], cmap='RdYlGn', vmin=50, vmax=100),
-                    use_container_width=True, hide_index=True
+                        'PH Real Wiidem': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance Wiidem (%)': '{:.1f}%',
+                        'Pzas Hora Real (Editable)': '{:.1f}', 'TC Real': '{:.2f}', 'Performance Real (%)': '{:.1f}%'
+                    }).background_gradient(subset=['Performance Wiidem (%)', 'Performance Real (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                    column_config={
+                        "Fecha": st.column_config.Column(disabled=True),
+                        "Producto": st.column_config.Column(disabled=True),
+                        "Tiempo_Hs": st.column_config.NumberColumn(disabled=True),
+                        "Piezas Prod Wiidem": st.column_config.NumberColumn(disabled=True),
+                        "TC Ingenieria": st.column_config.NumberColumn(disabled=True),
+                        "PH Real Wiidem": st.column_config.NumberColumn(disabled=True),
+                        "PH_Est": st.column_config.NumberColumn(disabled=True),
+                        "Performance Wiidem (%)": st.column_config.NumberColumn(disabled=True),
+                        "TC Real": st.column_config.NumberColumn(disabled=True),
+                        "Performance Real (%)": st.column_config.NumberColumn(disabled=True),
+                        "Pzas Hora Real (Editable)": st.column_config.NumberColumn(
+                            "Pzas Hora Real (Editable ✏️)",
+                            help="Edita las piezas por hora para calcular tu TC y Performance diaria",
+                            min_value=0.1,
+                            step=1.0
+                        )
+                    },
+                    use_container_width=True, 
+                    hide_index=True,
+                    key=editor_key_diario
                 )
+                # --- FIN LÓGICA DE EDICIÓN DIARIA ---
 
         # --- PESTAÑA 2: MENÚ DE EXPORTACIÓN A PDF ---
         with tab2:
