@@ -4,3 +4,4 @@ numpy
 matplotlib
 fpdf
 openpyxl
+xlsxwriter==3.1.9
