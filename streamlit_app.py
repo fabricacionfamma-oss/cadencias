@@ -474,7 +474,7 @@ else:
             
             df_global, df_productos_base, df_operarios, df_daily_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
 
-        # --- SISTEMA DE MEMORIA GLOBAL PARA EDICIONES MASIVAS ---
+        # --- SISTEMA DE MEMORIA GLOBAL (Sesión activa) ---
         if "correcciones_cadencia" not in st.session_state:
             st.session_state["correcciones_cadencia"] = {}
 
@@ -588,7 +588,7 @@ else:
                 )
 
         # =====================================================================
-        # PESTAÑA 2: EDITOR MASIVO SEPARADO POR PLANTA
+        # PESTAÑA 2: EDITOR MASIVO SEPARADO POR PLANTA CON DESCARGA EXCEL PRO
         # =====================================================================
         with tab2:
             st.markdown("### 🛠️ Corrección de Cadencias (Por Planta)")
@@ -610,18 +610,14 @@ else:
                     with tabs_plantas[idx]:
                         df_planta = df_edit_global[df_edit_global['Fábrica'] == planta].copy()
                         
-                        # Definir la estructura y orden de las columnas visuales
                         tabla_masiva = df_planta[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'Pzas_Prod_Original', 'TC Ingenieria', 'PH_Est']].copy()
                         
-                        # Inyectar la columna Editable con los datos reales vigentes (puede que ya vengan editados de la memoria)
                         tabla_masiva['Piezas Producidas (Editable ✏️)'] = df_planta['Pzas_Prod']
                         
-                        # Realizar los cálculos sobre esa columna editable en vivo
                         tabla_masiva['PH Real'] = np.where(tabla_masiva['Tiempo_Hs'] > 0, tabla_masiva['Piezas Producidas (Editable ✏️)'] / tabla_masiva['Tiempo_Hs'], 0)
                         tabla_masiva['TC Real'] = np.where(tabla_masiva['PH Real'] > 0, 60 / tabla_masiva['PH Real'], 0)
                         tabla_masiva['Performance Real (%)'] = np.where(tabla_masiva['PH_Est'] > 0, (tabla_masiva['PH Real'] / tabla_masiva['PH_Est']) * 100, 0)
                         
-                        # Reordenar las columnas en el orden solicitado
                         tabla_masiva = tabla_masiva[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'Pzas_Prod_Original', 'Piezas Producidas (Editable ✏️)', 'TC Ingenieria', 'PH_Est', 'PH Real', 'TC Real', 'Performance Real (%)']]
 
                         st.info(f"Mostrando datos de: **{planta}**. Al modificar las 'Piezas Producidas', presiona Enter para ver el impacto.")
@@ -655,31 +651,64 @@ else:
                             key=f"editor_{planta}"
                         )
                         
-                        # Detectar y guardar cambios en el número de piezas
                         hubo_cambio = False
                         for index, row in edited_df.iterrows():
                             val_actual = row['Piezas Producidas (Editable ✏️)']
                             clave = row['Clave_Unica']
                             
-                            # Si es diferente a lo guardado en memoria
                             if st.session_state["correcciones_cadencia"].get(clave) != val_actual:
-                                # Y si es diferente al original (para no llenar la memoria de filas no editadas)
                                 if val_actual != row['Pzas_Prod_Original'] or clave in st.session_state["correcciones_cadencia"]:
                                     st.session_state["correcciones_cadencia"][clave] = val_actual
                                     hubo_cambio = True
 
-                        # Sistema de Descarga Excel Exclusivo por Planta
                         st.markdown("---")
                         col_dl1, col_dl2 = st.columns([1, 4])
                         with col_dl1:
                             if not edited_df.empty:
-                                df_xlsx = edited_df.drop(columns=['Clave_Unica'])
+                                df_xlsx = edited_df.drop(columns=['Clave_Unica']).copy()
                                 output = io.BytesIO()
+                                
+                                # EXPORTACIÓN EXCEL PROFESIONAL (xlsxwriter)
                                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                                    df_xlsx.to_excel(writer, index=False, sheet_name=f'Cadencias_{planta}')
+                                    sheet_name = f'Cadencias_{planta}'[:31] 
+                                    df_xlsx.to_excel(writer, index=False, sheet_name=sheet_name, startrow=2)
+                                    
+                                    workbook = writer.book
+                                    worksheet = writer.sheets[sheet_name]
+                                    
+                                    title_format = workbook.add_format({'bold': True, 'font_size': 14, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#004286', 'font_color': 'white'})
+                                    header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+                                    fmt_0 = workbook.add_format({'num_format': '#,##0', 'align': 'center'})
+                                    fmt_1 = workbook.add_format({'num_format': '#,##0.0', 'align': 'center'})
+                                    fmt_2 = workbook.add_format({'num_format': '#,##0.00', 'align': 'center'})
+                                    fmt_4 = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
+                                    fmt_pct = workbook.add_format({'num_format': '0.0"%"', 'align': 'center'})
+                                    fmt_txt = workbook.add_format({'align': 'center'})
+                                    fmt_left = workbook.add_format({'align': 'left'})
+                                    
+                                    num_cols = len(df_xlsx.columns)
+                                    
+                                    worksheet.merge_range(0, 0, 0, num_cols - 1, f"REPORTE DE CADENCIAS EDITADAS - PLANTA: {planta.upper()}", title_format)
+                                    
+                                    for col_num, col_name in enumerate(df_xlsx.columns):
+                                        worksheet.write(1, col_num, col_name, header_format)
+                                        
+                                    worksheet.set_column('A:A', 12, fmt_txt)    
+                                    worksheet.set_column('B:B', 20, fmt_left)   
+                                    worksheet.set_column('C:C', 30, fmt_left)   
+                                    worksheet.set_column('D:D', 12, fmt_2)      
+                                    worksheet.set_column('E:E', 22, fmt_0)      
+                                    worksheet.set_column('F:F', 30, fmt_0)      
+                                    worksheet.set_column('G:G', 15, fmt_4)      
+                                    worksheet.set_column('H:H', 12, fmt_1)      
+                                    worksheet.set_column('I:I', 12, fmt_1)      
+                                    worksheet.set_column('J:J', 12, fmt_4)      
+                                    worksheet.set_column('K:K', 20, fmt_pct)    
+                                    
+                                    worksheet.set_row(0, 30)
                                 
                                 st.download_button(
-                                    label=f"📥 Descargar Excel - {planta}",
+                                    label=f"📥 Descargar Excel Formateado - {planta}",
                                     data=output.getvalue(),
                                     file_name=f"Correciones_Cadencia_{planta}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
