@@ -62,7 +62,6 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_e = df_e[df_e['Fábrica'] != 'CALIDAD'].copy()
 
     ce_buenas = encontrar_col(df_e, ['BUENAS'], 'EVENTOS')
-    
     ce_rt = next((c for c in df_e.columns if 'RETRABAJO' in c.upper() or ' RT' in c.upper() or c.upper() == 'RT'), None)
     ce_nobuenas = next((c for c in df_e.columns if 'NO BUENA' in c.upper() or 'MALA' in c.upper() or 'RECHAZO' in c.upper() or 'SCRAP' in c.upper()), None)
 
@@ -70,9 +69,26 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO/SEMIELABORADO' in c.upper() and 'DESC' not in c.upper()]
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO' in c.upper() and 'DESC' not in c.upper()]
 
-    # Extraer columnas de usuarios/operarios
-    cols_usr = [c for c in df_e.columns if 'USUARIO' in c.upper() or 'OPERARIO' in c.upper()]
-    ce_usr = cols_usr[0] if cols_usr else None
+    # ==========================================
+    # EXTRACCIÓN ROBUSTA DE LEGAJO Y NOMBRE
+    # ==========================================
+    cols_legajo = [c for c in df_e.columns if 'LEGAJO' in c.upper() or 'FICHA' in c.upper() or 'MATRÍCULA' in c.upper()]
+    cols_nombre = [c for c in df_e.columns if 'NOMBRE' in c.upper() and ('OPE' in c.upper() or 'USU' in c.upper() or 'EMP' in c.upper())]
+    
+    ce_usr_legajo = cols_legajo[0] if cols_legajo else None
+    ce_usr_nombre = cols_nombre[0] if cols_nombre else None
+    
+    if not ce_usr_legajo and not ce_usr_nombre:
+        cols_usr = [c for c in df_e.columns if 'USUARIO' in c.upper() or 'OPERARIO' in c.upper()]
+        if len(cols_usr) >= 2:
+            ce_usr_legajo = cols_usr[0]; ce_usr_nombre = cols_usr[1]
+        elif len(cols_usr) == 1:
+            ce_usr_legajo = cols_usr[0]; ce_usr_nombre = cols_usr[0]
+    elif ce_usr_legajo and not ce_usr_nombre: ce_usr_nombre = ce_usr_legajo
+    elif ce_usr_nombre and not ce_usr_legajo: ce_usr_legajo = ce_usr_nombre
+
+    df_e['Legajo'] = df_e[ce_usr_legajo].astype(str).str.strip().str.upper() if ce_usr_legajo else 'S/D'
+    df_e['Nombre'] = df_e[ce_usr_nombre].astype(str).str.strip().str.upper() if ce_usr_nombre else 'S/D'
 
     subset_dups = [ce_maq, ce_fec_ini, ce_fec_fin, ce_tiempo, ce_buenas] + cols_cod_e
     df_e = df_e.drop_duplicates(subset=subset_dups, keep='first').copy()
@@ -106,17 +122,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_fallas.rename(columns={ce_evento: 'Falla', 'Máquina_Consol': 'Máquina'}, inplace=True)
     df_fallas = df_fallas[df_fallas['Tiempo_Min'] > 0]
 
-    # --- EXTRACCIÓN DE OPERARIOS ---
-    if ce_usr:
-        df_e['Operario'] = df_e[ce_usr].astype(str).str.strip().str.upper()
-        df_operarios = df_e.groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', 'Operario']).agg({
-            'T_Prod': 'sum', 'T_Parada': 'sum'
-        }).reset_index()
-        df_operarios.rename(columns={'Máquina_Consol': 'Máquina'}, inplace=True)
-    else:
-        df_operarios = pd.DataFrame()
-
-    # --- CÁLCULO DE N (SIMULTANEIDAD) ---
+    # --- CÁLCULO DE N (SIMULTANEIDAD) Y CREACIÓN DE DATA DE PRODUCTO ---
     n_list, prods_row_list = [], []
     for idx, row in df_e.iterrows():
         mid_time = row['Mid_DT']
@@ -151,6 +157,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
         for p in r['Prods_List']:
             prod_data.append({
                 'Fábrica': r['Fábrica'], 'Fecha_Str': r['Fecha_Str'], 'Máquina_Consol': r['Máquina_Consol'], 'Producto': p,
+                'Legajo': r['Legajo'], 'Nombre': r['Nombre'],
                 'N': r['N'], 'T_Prod': r['T_Prod'], 'T_Parada': r['T_Parada'],
                 'Buenas': r['Buenas_Num'] / num_in_row,
                 'RT': r['RT_Num'] / num_in_row,
@@ -160,6 +167,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_prod_master = pd.DataFrame(prod_data)
     if df_prod_master.empty: raise ValueError("No se encontraron productos válidos en el archivo.")
 
+    # --- DF PARA CADENCIAS GLOBALES ---
     df_daily_prod = df_prod_master.groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', 'Producto', 'N']).agg({
         'T_Prod': 'sum', 'T_Parada': 'sum', 'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum'
     }).reset_index()
@@ -170,6 +178,13 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_daily_prod.rename(columns={'T_Prod': 'Tiempo_Min', 'Máquina_Consol': 'Máquina'}, inplace=True)
     df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
 
+    # --- DF PARA OPERARIOS ---
+    df_operarios_prod = df_prod_master.groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', 'Legajo', 'Nombre', 'Producto']).agg({
+        'T_Prod': 'sum', 'T_Parada': 'sum', 'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum'
+    }).reset_index()
+    df_operarios_prod = df_operarios_prod[(df_operarios_prod['T_Prod'] + df_operarios_prod['T_Parada']) >= 1.0].copy()
+    df_operarios_prod.rename(columns={'Máquina_Consol': 'Máquina'}, inplace=True)
+
     # --- CRUCE CON TIEMPOS DE CICLO (BASE) ---
     col_tc_s = next((c for c in df_s.columns if 'TIEMPO CICLO' in c.upper() or 'CICLO' in c.upper() or 'TC' in c.upper()), df_s.columns[-1])
     col_cod_s = next((c for c in df_s.columns if 'CÓDIGO' in c.upper() or 'PRODUCTO' in c.upper()), df_s.columns[0])
@@ -178,9 +193,15 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_s_min = df_s[[col_cod_s, col_tc_s]].drop_duplicates(subset=[col_cod_s])
     df_s_min[col_cod_s] = df_s_min[col_cod_s].astype(str).str.strip().str.upper()
     
+    # Cruce para df_daily_prod
     df_daily_prod = df_daily_prod.merge(df_s_min, left_on='Producto', right_on=col_cod_s, how='left')
     df_daily_prod.rename(columns={col_tc_s: 'TC_Base'}, inplace=True)
     df_daily_prod['TC'] = df_daily_prod['TC_Base'].fillna(0.0)
+    
+    # Cruce para df_operarios_prod
+    df_operarios_prod = df_operarios_prod.merge(df_s_min, left_on='Producto', right_on=col_cod_s, how='left')
+    df_operarios_prod.rename(columns={col_tc_s: 'TC_Base'}, inplace=True)
+    df_operarios_prod['TC'] = df_operarios_prod['TC_Base'].fillna(0.0)
     
     # --- CRUCE CON TIEMPOS DE CICLO (DIARIO) SI EXISTE ---
     if df_tc_diario is not None:
@@ -194,17 +215,18 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
             df_tc_diario[col_cod_tc] = df_tc_diario[col_cod_tc].astype(str).str.strip().str.upper()
             df_tc_diario[col_tc_tc] = pd.to_numeric(df_tc_diario[col_tc_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
             
-            df_daily_prod = df_daily_prod.merge(
-                df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]], 
-                left_on=['Fecha_Str', 'Producto'], 
-                right_on=['Fecha_Str_TC', col_cod_tc], 
-                how='left'
-            )
-            # Usa el TC diario si existe y es > 0, sino cae en el TC Base
+            # Cruce Diario
+            df_daily_prod = df_daily_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]], left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
             df_daily_prod['TC'] = np.where((df_daily_prod[col_tc_tc].notna()) & (df_daily_prod[col_tc_tc] > 0), df_daily_prod[col_tc_tc], df_daily_prod['TC_Base'])
             df_daily_prod.drop(columns=['Fecha_Str_TC', col_cod_tc, col_tc_tc], inplace=True, errors='ignore')
 
+            # Cruce Operarios
+            df_operarios_prod = df_operarios_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]], left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
+            df_operarios_prod['TC'] = np.where((df_operarios_prod[col_tc_tc].notna()) & (df_operarios_prod[col_tc_tc] > 0), df_operarios_prod[col_tc_tc], df_operarios_prod['TC_Base'])
+            df_operarios_prod.drop(columns=['Fecha_Str_TC', col_cod_tc, col_tc_tc], inplace=True, errors='ignore')
+
     df_daily_prod.drop(columns=['TC_Base'], inplace=True, errors='ignore')
+    df_operarios_prod.drop(columns=['TC_Base'], inplace=True, errors='ignore')
     
     if not df_daily_prod.empty:
         fechas_ordenadas = pd.to_datetime(df_daily_prod['Fecha_Str']).sort_values()
@@ -214,7 +236,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     else:
         intervalo_str = "Periodo: Sin datos"
 
-    return df_daily_prod, df_fallas, df_operarios, intervalo_str
+    return df_daily_prod, df_fallas, df_operarios_prod, intervalo_str
 
 # ==========================================
 # 3. FUNCIONES DE EXPORTACIÓN A PDF
@@ -413,7 +435,7 @@ if not (uploaded_e and uploaded_s):
     st.info("👈 Por favor, carga al menos los archivos de EVENTOS y TC BASE en el panel lateral.")
 else:
     try:
-        with st.spinner('Procesando datos, desglosando piezas y cruzando tiempos de ciclo...'):
+        with st.spinner('Procesando datos, desglosando piezas, cruzando tiempos de ciclo y operarios...'):
             df_e_raw = pd.read_csv(uploaded_e) if uploaded_e.name.endswith('.csv') else pd.read_excel(uploaded_e)
             df_s_raw = pd.read_csv(uploaded_s) if uploaded_s.name.endswith('.csv') else pd.read_excel(uploaded_s)
             
@@ -421,7 +443,7 @@ else:
             if uploaded_tc_diario:
                 df_tc_raw = pd.read_csv(uploaded_tc_diario) if uploaded_tc_diario.name.endswith('.csv') else pd.read_excel(uploaded_tc_diario)
             
-            df_daily_prod_base, df_fallas, df_operarios, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw, df_tc_raw)
+            df_daily_prod_base, df_fallas, df_operarios_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw, df_tc_raw)
 
         # Usamos df_daily_prod para los cálculos en caliente (sin memoria entre recargas)
         df_daily_prod = df_daily_prod_base.copy()
@@ -550,12 +572,12 @@ else:
             )
 
         # =====================================================================
-        # PESTAÑA 2: FALLAS Y OPERARIOS (NUEVO)
+        # PESTAÑA 2: FALLAS Y OPERARIOS 
         # =====================================================================
         with tab2:
             maq_sel_t2 = st.selectbox("📌 Seleccione la Máquina (Fallas y Operarios):", maquinas_disp, key='maq_t2')
             
-            col_f, col_o = st.columns(2)
+            col_f, col_o = st.columns([1, 1.2])
             
             with col_f:
                 st.markdown("### ⚠️ Top Fallas (Tiempos de Parada)")
@@ -576,26 +598,38 @@ else:
                     st.info("No se registraron fallas para esta máquina en el periodo.")
 
             with col_o:
-                st.markdown("### 👷 Operarios Involucrados")
-                if not df_operarios.empty:
-                    df_o_maq = df_operarios[df_operarios['Máquina'] == maq_sel_t2].copy()
-                    if not df_o_maq.empty:
-                        df_o_res = df_o_maq.groupby('Operario').agg({'T_Prod': 'sum', 'T_Parada': 'sum'}).reset_index()
-                        df_o_res['Hs Prod'] = df_o_res['T_Prod'] / 60.0
-                        df_o_res['Hs Parada'] = df_o_res['T_Parada'] / 60.0
-                        df_o_res['Hs Totales'] = df_o_res['Hs Prod'] + df_o_res['Hs Parada']
-                        df_o_res = df_o_res.sort_values('Hs Totales', ascending=False)
-                        
-                        st.dataframe(
-                            df_o_res[['Operario', 'Hs Prod', 'Hs Parada', 'Hs Totales']].style.format({
-                                'Hs Prod': '{:.1f}', 'Hs Parada': '{:.1f}', 'Hs Totales': '{:.1f}'
-                            }).background_gradient(subset=['Hs Parada'], cmap='Reds'),
-                            use_container_width=True, hide_index=True
-                        )
-                    else:
-                        st.info("No hay datos de operarios para esta máquina.")
+                st.markdown("### 👷 Performance Real por Operario")
+                st.write("Calculado en base al tiempo de producción individual y el TC del producto fabricado en su turno.")
+                df_o_maq = df_operarios_prod[df_operarios_prod['Máquina'] == maq_sel_t2].copy()
+                
+                if not df_o_maq.empty:
+                    # Calcular las piezas producidas y las que se "esperaban" de ese operario
+                    df_o_maq['Pzas_Prod_Op'] = df_o_maq['Buenas'] + df_o_maq['RT'] + df_o_maq['Scrap']
+                    df_o_maq['Pzas_Est_Op'] = np.where(df_o_maq['TC'] > 0, df_o_maq['T_Prod'] / df_o_maq['TC'], 0)
+                    
+                    df_o_res = df_o_maq.groupby(['Legajo', 'Nombre']).agg({
+                        'T_Prod': 'sum', 'T_Parada': 'sum', 'Pzas_Prod_Op': 'sum', 'Pzas_Est_Op': 'sum'
+                    }).reset_index()
+                    
+                    df_o_res['Hs Prod'] = df_o_res['T_Prod'] / 60.0
+                    df_o_res['Hs Parada'] = df_o_res['T_Parada'] / 60.0
+                    
+                    df_o_res['Performance (%)'] = np.where(
+                        df_o_res['Pzas_Est_Op'] > 0, 
+                        (df_o_res['Pzas_Prod_Op'] / df_o_res['Pzas_Est_Op']) * 100, 
+                        0
+                    )
+                    
+                    df_o_res = df_o_res.sort_values('Performance (%)', ascending=False)
+                    
+                    st.dataframe(
+                        df_o_res[['Legajo', 'Nombre', 'Hs Prod', 'Hs Parada', 'Performance (%)']].style.format({
+                            'Hs Prod': '{:.1f}', 'Hs Parada': '{:.1f}', 'Performance (%)': '{:.1f}%'
+                        }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                        use_container_width=True, hide_index=True
+                    )
                 else:
-                    st.info("El archivo no contiene columnas reconocibles de Usuarios u Operarios.")
+                    st.info("No hay datos de operarios para esta máquina.")
 
         # =====================================================================
         # PESTAÑA 3: EDITOR MASIVO SEPARADO POR PLANTA
