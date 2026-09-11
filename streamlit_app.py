@@ -31,10 +31,10 @@ class ReportePDF(FPDF):
         self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
 # ==========================================
-# 2. MOTOR FOTOGRÁFICO DIARIO 
+# 2. MOTOR DE DATOS INTEGRAL
 # ==========================================
 @st.cache_data(show_spinner=False)
-def procesar_datos_eventos_tc(df_e, df_s):
+def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_e.columns = [str(c).strip() for c in df_e.columns]
     df_s.columns = [str(c).strip() for c in df_s.columns]
 
@@ -51,7 +51,7 @@ def procesar_datos_eventos_tc(df_e, df_s):
     ce_fec_ini = encontrar_col(df_e, ['FECHA INICIO'], 'EVENTOS')
     ce_fec_fin = encontrar_col(df_e, ['FECHA FIN'], 'EVENTOS')
     ce_tiempo = encontrar_col(df_e, ['TIEMPO (MIN)', 'TIEMPO PRODUCTIVO', 'TIEMPO'], 'EVENTOS')
-    ce_evento = encontrar_col(df_e, ['NIVEL 1', 'EVENTO', 'ESTADO'], 'EVENTOS')
+    ce_evento = encontrar_col(df_e, ['NIVEL 1', 'EVENTO', 'ESTADO', 'FALLA'], 'EVENTOS')
     
     ce_fab = next((c for c in df_e.columns if 'FÁBRICA' in c.upper() or 'FABRICA' in c.upper() or 'PLANTA' in c.upper()), None)
     if ce_fab:
@@ -63,24 +63,16 @@ def procesar_datos_eventos_tc(df_e, df_s):
 
     ce_buenas = encontrar_col(df_e, ['BUENAS'], 'EVENTOS')
     
-    ce_rt = None
-    for c in df_e.columns:
-        if 'RETRABAJO' in c.upper() or ' RT' in c.upper() or c.upper() == 'RT':
-            ce_rt = c; break
-            
-    ce_nobuenas = None
-    for c in df_e.columns:
-        if 'NO BUENA' in c.upper() or 'MALA' in c.upper() or 'RECHAZO' in c.upper() or 'SCRAP' in c.upper():
-            ce_nobuenas = c; break
+    ce_rt = next((c for c in df_e.columns if 'RETRABAJO' in c.upper() or ' RT' in c.upper() or c.upper() == 'RT'), None)
+    ce_nobuenas = next((c for c in df_e.columns if 'NO BUENA' in c.upper() or 'MALA' in c.upper() or 'RECHAZO' in c.upper() or 'SCRAP' in c.upper()), None)
 
-    cols_cod_e = []
-    for c in df_e.columns:
-        if ('CÓDIGO' in c.upper() or 'CODIGO' in c.upper()) and ('PRODUCTO' in c.upper() or 'SEMIELABORADO' in c.upper()):
-            cols_cod_e.append(c)
+    cols_cod_e = [c for c in df_e.columns if ('CÓDIGO' in c.upper() or 'CODIGO' in c.upper()) and ('PRODUCTO' in c.upper() or 'SEMIELABORADO' in c.upper())]
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO/SEMIELABORADO' in c.upper() and 'DESC' not in c.upper()]
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO' in c.upper() and 'DESC' not in c.upper()]
 
+    # Extraer columnas de usuarios/operarios
     cols_usr = [c for c in df_e.columns if 'USUARIO' in c.upper() or 'OPERARIO' in c.upper()]
+    ce_usr = cols_usr[0] if cols_usr else None
 
     subset_dups = [ce_maq, ce_fec_ini, ce_fec_fin, ce_tiempo, ce_buenas] + cols_cod_e
     df_e = df_e.drop_duplicates(subset=subset_dups, keep='first').copy()
@@ -94,23 +86,37 @@ def procesar_datos_eventos_tc(df_e, df_s):
     df_e['Buenas_Num'] = pd.to_numeric(df_e[ce_buenas], errors='coerce').fillna(0)
     df_e['RT_Num'] = pd.to_numeric(df_e[ce_rt], errors='coerce').fillna(0) if ce_rt else 0
     df_e['Scrap_Num'] = pd.to_numeric(df_e[ce_nobuenas], errors='coerce').fillna(0) if ce_nobuenas else 0
-    
-    df_e['Total_Pzas_Fila'] = df_e['Buenas_Num'] + df_e['RT_Num'] + df_e['Scrap_Num']
 
+    df_e['Total_Pzas_Fila'] = df_e['Buenas_Num'] + df_e['RT_Num'] + df_e['Scrap_Num']
     df_e['Máquina_Base'] = df_e[ce_maq].astype(str).str.strip().str.upper()
     df_e['Máquina_Consol'] = df_e['Máquina_Base'].replace(r'(?i).*15.*', 'CELDA 15', regex=True)
 
     df_e['Fecha_Inicio_DT'] = pd.to_datetime(df_e[ce_fec_ini], errors='coerce', dayfirst=True)
     df_e['Fecha_Fin_DT'] = pd.to_datetime(df_e[ce_fec_fin], errors='coerce', dayfirst=True)
+    
     mask_ini_nat = df_e['Fecha_Inicio_DT'].isna()
     if mask_ini_nat.any(): df_e.loc[mask_ini_nat, 'Fecha_Inicio_DT'] = pd.to_datetime(df_e.loc[mask_ini_nat, ce_fec_ini], errors='coerce')
-    mask_fin_nat = df_e['Fecha_Fin_DT'].isna()
-    if mask_fin_nat.any(): df_e.loc[mask_fin_nat, 'Fecha_Fin_DT'] = pd.to_datetime(df_e.loc[mask_fin_nat, ce_fec_fin], errors='coerce')
     
     df_e = df_e.dropna(subset=['Fecha_Inicio_DT']).copy()
     df_e['Fecha_Str'] = df_e['Fecha_Inicio_DT'].dt.strftime('%Y-%m-%d')
     df_e['Mid_DT'] = df_e['Fecha_Inicio_DT'] + (df_e['Fecha_Fin_DT'] - df_e['Fecha_Inicio_DT']) / 2
 
+    # --- EXTRACCIÓN DE FALLAS ---
+    df_fallas = df_e[~df_e['Es_Prod']].groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', ce_evento]).agg({'Tiempo_Min': 'sum'}).reset_index()
+    df_fallas.rename(columns={ce_evento: 'Falla', 'Máquina_Consol': 'Máquina'}, inplace=True)
+    df_fallas = df_fallas[df_fallas['Tiempo_Min'] > 0]
+
+    # --- EXTRACCIÓN DE OPERARIOS ---
+    if ce_usr:
+        df_e['Operario'] = df_e[ce_usr].astype(str).str.strip().str.upper()
+        df_operarios = df_e.groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', 'Operario']).agg({
+            'T_Prod': 'sum', 'T_Parada': 'sum'
+        }).reset_index()
+        df_operarios.rename(columns={'Máquina_Consol': 'Máquina'}, inplace=True)
+    else:
+        df_operarios = pd.DataFrame()
+
+    # --- CÁLCULO DE N (SIMULTANEIDAD) ---
     n_list, prods_row_list = [], []
     for idx, row in df_e.iterrows():
         mid_time = row['Mid_DT']
@@ -145,12 +151,10 @@ def procesar_datos_eventos_tc(df_e, df_s):
         for p in r['Prods_List']:
             prod_data.append({
                 'Fábrica': r['Fábrica'], 'Fecha_Str': r['Fecha_Str'], 'Máquina_Consol': r['Máquina_Consol'], 'Producto': p,
-                'N': r['N'], 
-                'T_Prod': r['T_Prod'], 'T_Parada': r['T_Parada'],
+                'N': r['N'], 'T_Prod': r['T_Prod'], 'T_Parada': r['T_Parada'],
                 'Buenas': r['Buenas_Num'] / num_in_row,
                 'RT': r['RT_Num'] / num_in_row,
-                'Scrap': r['Scrap_Num'] / num_in_row,
-                'Usuarios': [str(r.get(c, '')).strip() for c in cols_usr if pd.notna(r.get(c))]
+                'Scrap': r['Scrap_Num'] / num_in_row
             })
 
     df_prod_master = pd.DataFrame(prod_data)
@@ -160,29 +164,48 @@ def procesar_datos_eventos_tc(df_e, df_s):
         'T_Prod': 'sum', 'T_Parada': 'sum', 'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum'
     }).reset_index()
     
-    # ====================================================
-    # FILTRO: DESCARTAR REGISTROS CON < 1 MINUTO Y 0 PIEZAS
-    # ====================================================
     df_daily_prod['Pzas_Filtro'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
     df_daily_prod = df_daily_prod[(df_daily_prod['T_Prod'] >= 1.0) & (df_daily_prod['Pzas_Filtro'] > 0)].copy()
     df_daily_prod.drop(columns=['Pzas_Filtro'], inplace=True)
-
-    df_daily_prod.rename(columns={'T_Prod': 'Tiempo_Min'}, inplace=True)
+    df_daily_prod.rename(columns={'T_Prod': 'Tiempo_Min', 'Máquina_Consol': 'Máquina'}, inplace=True)
     df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas'] + df_daily_prod['RT'] + df_daily_prod['Scrap']
 
-    col_tc = next((c for c in df_s.columns if 'TIEMPO CICLO' in c.upper() or 'CICLO' in c.upper() or 'TC' in c.upper()), df_s.columns[-1])
-    col_cod = next((c for c in df_s.columns if 'CÓDIGO PRODUCTO' in c.upper() or 'CODIGO PRODUCTO' in c.upper()), None)
-    if not col_cod: col_cod = next((c for c in df_s.columns if 'PRODUCTO' in c.upper() and 'CÓDIGO' in c.upper()), None)
-    if not col_cod: col_cod = next((c for c in df_s.columns if 'PRODUCTO' in c.upper()), df_s.columns[4])
+    # --- CRUCE CON TIEMPOS DE CICLO (BASE) ---
+    col_tc_s = next((c for c in df_s.columns if 'TIEMPO CICLO' in c.upper() or 'CICLO' in c.upper() or 'TC' in c.upper()), df_s.columns[-1])
+    col_cod_s = next((c for c in df_s.columns if 'CÓDIGO' in c.upper() or 'PRODUCTO' in c.upper()), df_s.columns[0])
+    
+    df_s[col_tc_s] = pd.to_numeric(df_s[col_tc_s].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+    df_s_min = df_s[[col_cod_s, col_tc_s]].drop_duplicates(subset=[col_cod_s])
+    df_s_min[col_cod_s] = df_s_min[col_cod_s].astype(str).str.strip().str.upper()
+    
+    df_daily_prod = df_daily_prod.merge(df_s_min, left_on='Producto', right_on=col_cod_s, how='left')
+    df_daily_prod.rename(columns={col_tc_s: 'TC_Base'}, inplace=True)
+    df_daily_prod['TC'] = df_daily_prod['TC_Base'].fillna(0.0)
+    
+    # --- CRUCE CON TIEMPOS DE CICLO (DIARIO) SI EXISTE ---
+    if df_tc_diario is not None:
+        df_tc_diario.columns = [str(c).strip().upper() for c in df_tc_diario.columns]
+        col_fec_tc = next((c for c in df_tc_diario.columns if 'FECHA' in c), None)
+        col_cod_tc = next((c for c in df_tc_diario.columns if 'PRODUCTO' in c or 'CÓDIGO' in c or 'CODIGO' in c), None)
+        col_tc_tc = next((c for c in df_tc_diario.columns if 'TC' in c or 'CICLO' in c), None)
+        
+        if col_fec_tc and col_cod_tc and col_tc_tc:
+            df_tc_diario['Fecha_Str_TC'] = pd.to_datetime(df_tc_diario[col_fec_tc], errors='coerce', dayfirst=True).dt.strftime('%Y-%m-%d')
+            df_tc_diario[col_cod_tc] = df_tc_diario[col_cod_tc].astype(str).str.strip().str.upper()
+            df_tc_diario[col_tc_tc] = pd.to_numeric(df_tc_diario[col_tc_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+            
+            df_daily_prod = df_daily_prod.merge(
+                df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]], 
+                left_on=['Fecha_Str', 'Producto'], 
+                right_on=['Fecha_Str_TC', col_cod_tc], 
+                how='left'
+            )
+            # Usa el TC diario si existe y es > 0, sino cae en el TC Base
+            df_daily_prod['TC'] = np.where((df_daily_prod[col_tc_tc].notna()) & (df_daily_prod[col_tc_tc] > 0), df_daily_prod[col_tc_tc], df_daily_prod['TC_Base'])
+            df_daily_prod.drop(columns=['Fecha_Str_TC', col_cod_tc, col_tc_tc], inplace=True, errors='ignore')
 
-    df_s[col_tc] = pd.to_numeric(df_s[col_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
-    df_s_min = df_s[[col_cod, col_tc]].drop_duplicates(subset=[col_cod], keep='first')
-    df_s_min[col_cod] = df_s_min[col_cod].astype(str).str.strip().str.upper()
-
-    df_daily_prod = df_daily_prod.merge(df_s_min, left_on='Producto', right_on=col_cod, how='left')
-    df_daily_prod.rename(columns={col_tc: 'TC', 'Máquina_Consol': 'Máquina'}, inplace=True)
-    df_daily_prod['TC'] = df_daily_prod['TC'].fillna(0.0)
-
+    df_daily_prod.drop(columns=['TC_Base'], inplace=True, errors='ignore')
+    
     if not df_daily_prod.empty:
         fechas_ordenadas = pd.to_datetime(df_daily_prod['Fecha_Str']).sort_values()
         fecha_min = fechas_ordenadas.iloc[0].strftime('%d/%m/%Y')
@@ -191,10 +214,10 @@ def procesar_datos_eventos_tc(df_e, df_s):
     else:
         intervalo_str = "Periodo: Sin datos"
 
-    return df_prod_master, df_daily_prod, intervalo_str
+    return df_daily_prod, df_fallas, df_operarios, intervalo_str
 
 # ==========================================
-# 3. Y 4. REPORTES PDF 
+# 3. FUNCIONES DE EXPORTACIÓN A PDF
 # ==========================================
 def generar_pdf_produccion(maquinas, df_productos, intervalo_str):
     pdf = ReportePDF()
@@ -268,7 +291,9 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     df_daily = df_daily_prod[df_daily_prod['Máquina'].str.upper() == maquina_seleccionada.upper()].copy()
     if df_daily.empty: return False
 
-    df_daily = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({'Tiempo_Min': 'sum', 'T_Parada': 'sum', 'Buenas_Edit': 'sum', 'RT_Edit': 'sum', 'Scrap_Edit': 'sum', 'Pzas_Prod': 'sum'}).reset_index()
+    df_daily = df_daily.groupby(['Fecha_Str', 'Producto']).agg({
+        'Tiempo_Min': 'sum', 'T_Parada': 'sum', 'Buenas_Edit': 'sum', 'RT_Edit': 'sum', 'Scrap_Edit': 'sum', 'Pzas_Prod': 'sum', 'TC': 'mean'
+    }).reset_index()
     df_daily['Fecha_DT'] = pd.to_datetime(df_daily['Fecha_Str'])
     df_daily = df_daily.sort_values(by=['Fecha_DT', 'Producto'])
 
@@ -371,33 +396,38 @@ def generar_evolutivo_master(df_daily_prod, maquinas, modo, intervalo_str):
     return archivos_generados
 
 # ==========================================
-# 5. STREAMLIT APP UI
+# 4. STREAMLIT APP UI
 # ==========================================
-st.set_page_config(page_title="Análisis de Cadencias", layout="wide", page_icon="⚙️")
+st.set_page_config(page_title="Análisis de Cadencias y Fallas", layout="wide", page_icon="⚙️")
 
 with st.sidebar:
     st.title("⚙️ Configuración")
     st.header("1. Carga de Archivos")
     uploaded_e = st.file_uploader("📂 Archivo EVENTOS", type=['csv', 'xlsx'])
-    uploaded_s = st.file_uploader("📂 Archivo TIEMPOS (Ciclo)", type=['csv', 'xlsx'])
+    uploaded_s = st.file_uploader("📂 Archivo TC BASE", type=['csv', 'xlsx'])
+    uploaded_tc_diario = st.file_uploader("📂 Archivo TC DIARIO (Opcional)", type=['csv', 'xlsx'], help="Debe contener Fecha, Código de Producto y el TC real del día.")
 
-st.title("⚙️ Análisis de Cadencias y Performance")
+st.title("⚙️ Análisis Integral: Cadencias, Fallas y Operarios")
 
 if not (uploaded_e and uploaded_s):
-    st.info("👈 Por favor, carga los archivos de Excel/CSV en el panel lateral para visualizar las cadencias.")
+    st.info("👈 Por favor, carga al menos los archivos de EVENTOS y TC BASE en el panel lateral.")
 else:
     try:
         with st.spinner('Procesando datos, desglosando piezas y cruzando tiempos de ciclo...'):
             df_e_raw = pd.read_csv(uploaded_e) if uploaded_e.name.endswith('.csv') else pd.read_excel(uploaded_e)
             df_s_raw = pd.read_csv(uploaded_s) if uploaded_s.name.endswith('.csv') else pd.read_excel(uploaded_s)
             
-            df_prod_master, df_daily_prod_base, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw)
+            df_tc_raw = None
+            if uploaded_tc_diario:
+                df_tc_raw = pd.read_csv(uploaded_tc_diario) if uploaded_tc_diario.name.endswith('.csv') else pd.read_excel(uploaded_tc_diario)
+            
+            df_daily_prod_base, df_fallas, df_operarios, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw, df_tc_raw)
 
         # Usamos df_daily_prod para los cálculos en caliente (sin memoria entre recargas)
         df_daily_prod = df_daily_prod_base.copy()
         df_daily_prod['Clave_Unica'] = df_daily_prod['Fecha_Str'] + "_" + df_daily_prod['Máquina'] + "_" + df_daily_prod['Producto']
 
-        # MEMORIA DE SESIÓN PROTEGIDA (Por si quedó un formato viejo)
+        # MEMORIA DE SESIÓN PROTEGIDA (Editor Masivo)
         if "ediciones_temp_editor" not in st.session_state:
             st.session_state["ediciones_temp_editor"] = {}
         
@@ -425,7 +455,7 @@ else:
             'Tiempo_Min': 'sum', 'T_Parada': 'sum',
             'Buenas': 'sum', 'RT': 'sum', 'Scrap': 'sum',
             'Buenas_Edit': 'sum', 'RT_Edit': 'sum', 'Scrap_Edit': 'sum',
-            'Pzas_Prod': 'sum', 'Pzas_Est_Dia': 'sum', 'TC': 'first'
+            'Pzas_Prod': 'sum', 'Pzas_Est_Dia': 'sum', 'TC': 'mean'
         }).reset_index()
         
         df_productos.rename(columns={'N': 'Simultaneo_Con'}, inplace=True)
@@ -437,11 +467,11 @@ else:
 
         maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
         
-        # --- CREACIÓN DE LAS 3 PESTAÑAS ---
-        tab1, tab2, tab3 = st.tabs(["📊 Dashboard de Máquina", "🛠️ Editor Masivo por Planta", "📄 Exportación PDF"])
+        # --- CREACIÓN DE LAS 4 PESTAÑAS ---
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Cadencias y Performance", "⚠️ Fallas y Operarios", "🛠️ Editor Masivo por Planta", "📄 Exportación PDF"])
 
         # =====================================================================
-        # PESTAÑA 1: VISUALIZACIÓN WEB DE SÓLO LECTURA
+        # PESTAÑA 1: VISUALIZACIÓN DE PERFORMANCE
         # =====================================================================
         with tab1:
             st.markdown(f"**{intervalo_str}**")
@@ -472,13 +502,12 @@ else:
             st.markdown("#### 2. Evolutivo Diario de Cadencia (PH Real)")
             df_daily = df_daily_prod[df_daily_prod['Máquina'] == maq_sel].copy()
             if not df_daily.empty:
-                df_daily_grp = df_daily.groupby(['Fecha_Str', 'Producto', 'TC']).agg({'Tiempo_Min': 'sum', 'Pzas_Prod': 'sum'}).reset_index()
+                df_daily_grp = df_daily.groupby(['Fecha_Str', 'Producto']).agg({'Tiempo_Min': 'sum', 'Pzas_Prod': 'sum', 'TC': 'mean'}).reset_index()
                 df_daily_grp['Fecha_DT'] = pd.to_datetime(df_daily_grp['Fecha_Str'])
                 df_daily_grp = df_daily_grp.sort_values(by=['Fecha_DT', 'Producto'])
 
                 df_daily_grp['Tiempo_Hs'] = df_daily_grp['Tiempo_Min'] / 60.0
                 df_daily_grp['PH_Real'] = np.where(df_daily_grp['Tiempo_Hs'] > 0, df_daily_grp['Pzas_Prod'] / df_daily_grp['Tiempo_Hs'], 0)
-                df_daily_grp['PH_Est'] = np.where(df_daily_grp['TC'] > 0, 60 / df_daily_grp['TC'], 0)
                 
                 fig_line, ax_line = plt.subplots(figsize=(10, 4))
                 for prod in df_daily_grp['Producto'].unique():
@@ -493,39 +522,87 @@ else:
                 ax_line.grid(True, linestyle='--', alpha=0.6)
                 st.pyplot(fig_line)
                 
-                st.markdown("#### 3. Detalle Diario (Día a Día)")
-                df_diario_ui = df_daily_prod[df_daily_prod['Máquina'] == maq_sel].copy()
-                
-                df_diario_ui['Tiempo_Hs'] = df_diario_ui['Tiempo_Min'] / 60.0
-                df_diario_ui['T_Parada_Hs'] = df_diario_ui['T_Parada'] / 60.0
-                df_diario_ui['Disponibilidad (%)'] = np.where((df_diario_ui['Tiempo_Min'] + df_diario_ui['T_Parada']) > 0, 
-                                                              (df_diario_ui['Tiempo_Min'] / (df_diario_ui['Tiempo_Min'] + df_diario_ui['T_Parada'])) * 100, 0)
-                
-                df_diario_ui['PH Real'] = np.where(df_diario_ui['Tiempo_Hs'] > 0, df_diario_ui['Pzas_Prod'] / df_diario_ui['Tiempo_Hs'], 0)
-                df_diario_ui['PH_Est'] = np.where(df_diario_ui['TC'] > 0, 60 / df_diario_ui['TC'], 0)
-                df_diario_ui['Performance (%)'] = np.where(df_diario_ui['PH_Est'] > 0, (df_diario_ui['PH Real'] / df_diario_ui['PH_Est']) * 100, 0)
-                df_diario_ui['Fecha'] = pd.to_datetime(df_diario_ui['Fecha_Str']).dt.strftime('%d/%m/%Y')
-                
-                df_diario_ui.rename(columns={'TC': 'TC Ingenieria'}, inplace=True)
+            st.markdown("#### 3. Detalle Diario (Día a Día)")
+            df_diario_ui = df_daily_prod[df_daily_prod['Máquina'] == maq_sel].copy()
+            
+            df_diario_ui['Tiempo_Hs'] = df_diario_ui['Tiempo_Min'] / 60.0
+            df_diario_ui['T_Parada_Hs'] = df_diario_ui['T_Parada'] / 60.0
+            df_diario_ui['Disponibilidad (%)'] = np.where((df_diario_ui['Tiempo_Min'] + df_diario_ui['T_Parada']) > 0, 
+                                                          (df_diario_ui['Tiempo_Min'] / (df_diario_ui['Tiempo_Min'] + df_diario_ui['T_Parada'])) * 100, 0)
+            
+            df_diario_ui['PH Real'] = np.where(df_diario_ui['Tiempo_Hs'] > 0, df_diario_ui['Pzas_Prod'] / df_diario_ui['Tiempo_Hs'], 0)
+            df_diario_ui['PH_Est'] = np.where(df_diario_ui['TC'] > 0, 60 / df_diario_ui['TC'], 0)
+            df_diario_ui['Performance (%)'] = np.where(df_diario_ui['PH_Est'] > 0, (df_diario_ui['PH Real'] / df_diario_ui['PH_Est']) * 100, 0)
+            df_diario_ui['Fecha'] = pd.to_datetime(df_diario_ui['Fecha_Str']).dt.strftime('%d/%m/%Y')
+            
+            df_diario_ui.rename(columns={'TC': 'TC Ingenieria'}, inplace=True)
 
-                tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas_Edit', 'RT_Edit', 'Scrap_Edit', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].iloc[::-1].reset_index(drop=True)
-                
-                st.info("💡 Si deseas editar la producción y que los cálculos se actualicen, ve a la pestaña **'🛠️ Editor Masivo por Planta'**.")
-                st.dataframe(
-                    tabla_diaria.style.format({
-                        'Tiempo_Hs': '{:.2f}', 'T_Parada_Hs': '{:.2f}', 'Disponibilidad (%)': '{:.1f}%',
-                        'Buenas_Edit': '{:,.0f}', 'RT_Edit': '{:,.0f}', 'Scrap_Edit': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
-                        'PH Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance (%)': '{:.1f}%'
-                    }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
-                    use_container_width=True, hide_index=True
-                )
+            tabla_diaria = df_diario_ui[['Fecha', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas_Edit', 'RT_Edit', 'Scrap_Edit', 'TC Ingenieria', 'PH Real', 'PH_Est', 'Performance (%)']].iloc[::-1].reset_index(drop=True)
+            
+            st.info("💡 Si deseas editar la producción, ve a la pestaña **'🛠️ Editor Masivo por Planta'**.")
+            st.dataframe(
+                tabla_diaria.style.format({
+                    'Tiempo_Hs': '{:.2f}', 'T_Parada_Hs': '{:.2f}', 'Disponibilidad (%)': '{:.1f}%',
+                    'Buenas_Edit': '{:,.0f}', 'RT_Edit': '{:,.0f}', 'Scrap_Edit': '{:,.0f}', 'TC Ingenieria': '{:.4f}',
+                    'PH Real': '{:.1f}', 'PH_Est': '{:.1f}', 'Performance (%)': '{:.1f}%'
+                }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                use_container_width=True, hide_index=True
+            )
 
         # =====================================================================
-        # PESTAÑA 2: EDITOR MASIVO SEPARADO POR PLANTA
+        # PESTAÑA 2: FALLAS Y OPERARIOS (NUEVO)
         # =====================================================================
         with tab2:
+            maq_sel_t2 = st.selectbox("📌 Seleccione la Máquina (Fallas y Operarios):", maquinas_disp, key='maq_t2')
+            
+            col_f, col_o = st.columns(2)
+            
+            with col_f:
+                st.markdown("### ⚠️ Top Fallas (Tiempos de Parada)")
+                df_f_maq = df_fallas[df_fallas['Máquina'] == maq_sel_t2].copy()
+                if not df_f_maq.empty:
+                    df_f_res = df_f_maq.groupby('Falla')['Tiempo_Min'].sum().reset_index()
+                    df_f_res['Horas Perdidas'] = df_f_res['Tiempo_Min'] / 60.0
+                    df_f_res = df_f_res.sort_values('Horas Perdidas', ascending=False).head(10)
+                    
+                    fig_f, ax_f = plt.subplots(figsize=(6, 4))
+                    ax_f.barh(df_f_res['Falla'].str[:30], df_f_res['Horas Perdidas'], color='crimson')
+                    ax_f.invert_yaxis()
+                    ax_f.set_xlabel("Horas Totales")
+                    st.pyplot(fig_f)
+                    
+                    st.dataframe(df_f_res[['Falla', 'Horas Perdidas']].style.format({'Horas Perdidas': '{:.1f}'}), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No se registraron fallas para esta máquina en el periodo.")
+
+            with col_o:
+                st.markdown("### 👷 Operarios Involucrados")
+                if not df_operarios.empty:
+                    df_o_maq = df_operarios[df_operarios['Máquina'] == maq_sel_t2].copy()
+                    if not df_o_maq.empty:
+                        df_o_res = df_o_maq.groupby('Operario').agg({'T_Prod': 'sum', 'T_Parada': 'sum'}).reset_index()
+                        df_o_res['Hs Prod'] = df_o_res['T_Prod'] / 60.0
+                        df_o_res['Hs Parada'] = df_o_res['T_Parada'] / 60.0
+                        df_o_res['Hs Totales'] = df_o_res['Hs Prod'] + df_o_res['Hs Parada']
+                        df_o_res = df_o_res.sort_values('Hs Totales', ascending=False)
+                        
+                        st.dataframe(
+                            df_o_res[['Operario', 'Hs Prod', 'Hs Parada', 'Hs Totales']].style.format({
+                                'Hs Prod': '{:.1f}', 'Hs Parada': '{:.1f}', 'Hs Totales': '{:.1f}'
+                            }).background_gradient(subset=['Hs Parada'], cmap='Reds'),
+                            use_container_width=True, hide_index=True
+                        )
+                    else:
+                        st.info("No hay datos de operarios para esta máquina.")
+                else:
+                    st.info("El archivo no contiene columnas reconocibles de Usuarios u Operarios.")
+
+        # =====================================================================
+        # PESTAÑA 3: EDITOR MASIVO SEPARADO POR PLANTA
+        # =====================================================================
+        with tab3:
             st.markdown("### 🛠️ Corrección de Producción (Por Planta)")
-            st.write("Edita las **Piezas Buenas, RT o Scrap** de cada día. **NOTA:** Los datos editados aquí se borran al cerrar o recargar (F5) la página. Asegúrate de exportar tus reportes o Excels antes de salir.")
+            st.write("Edita las **Piezas Buenas, RT o Scrap** de cada día. **NOTA:** Los datos editados aquí se borran al recargar (F5) la página. Asegúrate de exportar tus reportes o Excels antes de salir.")
             
             df_edit_global = df_daily_prod.copy()
             df_edit_global['Fecha'] = pd.to_datetime(df_edit_global['Fecha_Str']).dt.strftime('%d/%m/%Y')
@@ -548,18 +625,15 @@ else:
                         
                         tabla_masiva = df_planta[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas', 'RT', 'Scrap', 'TC Ingenieria', 'PH_Est']].copy()
                         
-                        # Inyectar estado inicial o el editado de la sesión
                         tabla_masiva['Buenas (✏️)'] = df_planta['Buenas_Edit']
                         tabla_masiva['RT (✏️)'] = df_planta['RT_Edit']
                         tabla_masiva['Scrap (✏️)'] = df_planta['Scrap_Edit']
                         
-                        # Cálculos dinámicos
                         tabla_masiva['Total Editado'] = tabla_masiva['Buenas (✏️)'] + tabla_masiva['RT (✏️)'] + tabla_masiva['Scrap (✏️)']
                         tabla_masiva['PH Real'] = np.where(tabla_masiva['Tiempo_Hs'] > 0, tabla_masiva['Total Editado'] / tabla_masiva['Tiempo_Hs'], 0)
                         tabla_masiva['TC Real'] = np.where(tabla_masiva['PH Real'] > 0, 60 / tabla_masiva['PH Real'], 0)
                         tabla_masiva['Performance Real (%)'] = np.where(tabla_masiva['PH_Est'] > 0, (tabla_masiva['PH Real'] / tabla_masiva['PH_Est']) * 100, 0)
                         
-                        # Reordenar columnas
                         tabla_masiva = tabla_masiva[['Clave_Unica', 'Fecha', 'Máquina', 'Producto', 'Tiempo_Hs', 'T_Parada_Hs', 'Disponibilidad (%)', 'Buenas', 'RT', 'Scrap', 'Buenas (✏️)', 'RT (✏️)', 'Scrap (✏️)', 'Total Editado', 'TC Ingenieria', 'PH_Est', 'PH Real', 'TC Real', 'Performance Real (%)']]
 
                         st.info(f"Mostrando datos de: **{planta}**. Al modificar las casillas con ✏️, presiona Enter.")
@@ -597,7 +671,6 @@ else:
                             key=f"editor_{planta}"
                         )
                         
-                        # Guardar cambios
                         hubo_cambio = False
                         for index, row in edited_df.iterrows():
                             b_act = row['Buenas (✏️)']
@@ -614,7 +687,6 @@ else:
                                 st.session_state["ediciones_temp_editor"][clave] = {'B': b_act, 'R': rt_act, 'S': s_act}
                                 hubo_cambio = True
 
-                        # Sistema de Descarga Excel Exclusivo
                         st.markdown("---")
                         col_dl1, col_dl2 = st.columns([1, 4])
                         with col_dl1:
@@ -673,13 +745,12 @@ else:
                             st.rerun()
 
         # =====================================================================
-        # PESTAÑA 3: MENÚ DE EXPORTACIÓN A PDF
+        # PESTAÑA 4: MENÚ DE EXPORTACIÓN A PDF
         # =====================================================================
-        with tab3:
+        with tab4:
             st.markdown("### 📄 Configuración de Reportes PDF")
-            st.info("💡 **Nota:** Si generaste correcciones en el 'Editor', los reportes PDF se descargarán reflejando esa nueva producción y performance.")
+            st.info("💡 **Nota:** Si generaste correcciones en el 'Editor', los reportes PDF reflejarán esa nueva producción y el TC dinámico calculado.")
             
-            # El df_productos_pdf ya está listo desde las modificaciones en vivo
             df_productos_pdf = df_productos.copy()
 
             opcion_reporte = st.radio(
