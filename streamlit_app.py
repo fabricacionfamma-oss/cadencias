@@ -70,25 +70,16 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO' in c.upper() and 'DESC' not in c.upper()]
 
     # ==========================================
-    # EXTRACCIÓN ROBUSTA DE LEGAJO Y NOMBRE
+    # EXTRACCIÓN DE LEGAJO (EVENTOS)
     # ==========================================
-    cols_legajo = [c for c in df_e.columns if 'LEGAJO' in c.upper() or 'FICHA' in c.upper() or 'MATRÍCULA' in c.upper()]
-    cols_nombre = [c for c in df_e.columns if 'NOMBRE' in c.upper() and ('OPE' in c.upper() or 'USU' in c.upper() or 'EMP' in c.upper())]
+    cols_legajo = [c for c in df_e.columns if 'LEGAJO' in c.upper() or 'FICHA' in c.upper() or 'MATRÍCULA' in c.upper() or 'USUARIO' in c.upper() or 'OPERARIO' in c.upper()]
+    cols_nombre_fallback = [c for c in df_e.columns if 'NOMBRE' in c.upper()]
     
     ce_usr_legajo = cols_legajo[0] if cols_legajo else None
-    ce_usr_nombre = cols_nombre[0] if cols_nombre else None
+    ce_usr_nombre_fb = cols_nombre_fallback[0] if cols_nombre_fallback else None
     
-    if not ce_usr_legajo and not ce_usr_nombre:
-        cols_usr = [c for c in df_e.columns if 'USUARIO' in c.upper() or 'OPERARIO' in c.upper()]
-        if len(cols_usr) >= 2:
-            ce_usr_legajo = cols_usr[0]; ce_usr_nombre = cols_usr[1]
-        elif len(cols_usr) == 1:
-            ce_usr_legajo = cols_usr[0]; ce_usr_nombre = cols_usr[0]
-    elif ce_usr_legajo and not ce_usr_nombre: ce_usr_nombre = ce_usr_legajo
-    elif ce_usr_nombre and not ce_usr_legajo: ce_usr_legajo = ce_usr_nombre
-
     df_e['Legajo'] = df_e[ce_usr_legajo].astype(str).str.strip().str.upper() if ce_usr_legajo else 'S/D'
-    df_e['Nombre'] = df_e[ce_usr_nombre].astype(str).str.strip().str.upper() if ce_usr_nombre else 'S/D'
+    df_e['Nombre'] = df_e[ce_usr_nombre_fb].astype(str).str.strip().str.upper() if ce_usr_nombre_fb else 'S/D'
 
     subset_dups = [ce_maq, ce_fec_ini, ce_fec_fin, ce_tiempo, ce_buenas] + cols_cod_e
     df_e = df_e.drop_duplicates(subset=subset_dups, keep='first').copy()
@@ -103,7 +94,6 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_e['RT_Num'] = pd.to_numeric(df_e[ce_rt], errors='coerce').fillna(0) if ce_rt else 0
     df_e['Scrap_Num'] = pd.to_numeric(df_e[ce_nobuenas], errors='coerce').fillna(0) if ce_nobuenas else 0
 
-    df_e['Total_Pzas_Fila'] = df_e['Buenas_Num'] + df_e['RT_Num'] + df_e['Scrap_Num']
     df_e['Máquina_Base'] = df_e[ce_maq].astype(str).str.strip().str.upper()
     df_e['Máquina_Consol'] = df_e['Máquina_Base'].replace(r'(?i).*15.*', 'CELDA 15', regex=True)
 
@@ -117,12 +107,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_e['Fecha_Str'] = df_e['Fecha_Inicio_DT'].dt.strftime('%Y-%m-%d')
     df_e['Mid_DT'] = df_e['Fecha_Inicio_DT'] + (df_e['Fecha_Fin_DT'] - df_e['Fecha_Inicio_DT']) / 2
 
-    # --- EXTRACCIÓN DE FALLAS ---
-    df_fallas = df_e[~df_e['Es_Prod']].groupby(['Fábrica', 'Fecha_Str', 'Máquina_Consol', ce_evento]).agg({'Tiempo_Min': 'sum'}).reset_index()
-    df_fallas.rename(columns={ce_evento: 'Falla', 'Máquina_Consol': 'Máquina'}, inplace=True)
-    df_fallas = df_fallas[df_fallas['Tiempo_Min'] > 0]
-
-    # --- CÁLCULO DE N (SIMULTANEIDAD) Y CREACIÓN DE DATA DE PRODUCTO ---
+    # --- CÁLCULO DE N (SIMULTANEIDAD) ---
     n_list, prods_row_list = [], []
     for idx, row in df_e.iterrows():
         mid_time = row['Mid_DT']
@@ -193,19 +178,30 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_s_min = df_s[[col_cod_s, col_tc_s]].drop_duplicates(subset=[col_cod_s])
     df_s_min[col_cod_s] = df_s_min[col_cod_s].astype(str).str.strip().str.upper()
     
-    # Cruce para df_daily_prod
     df_daily_prod = df_daily_prod.merge(df_s_min, left_on='Producto', right_on=col_cod_s, how='left')
     df_daily_prod.rename(columns={col_tc_s: 'TC_Base'}, inplace=True)
     df_daily_prod['TC'] = df_daily_prod['TC_Base'].fillna(0.0)
     
-    # Cruce para df_operarios_prod
     df_operarios_prod = df_operarios_prod.merge(df_s_min, left_on='Producto', right_on=col_cod_s, how='left')
     df_operarios_prod.rename(columns={col_tc_s: 'TC_Base'}, inplace=True)
     df_operarios_prod['TC'] = df_operarios_prod['TC_Base'].fillna(0.0)
     
-    # --- CRUCE CON TIEMPOS DE CICLO (DIARIO) SI EXISTE ---
+    # --- CRUCE CON TIEMPOS DE CICLO Y NOMBRES (DIARIO - PRODUCCIÓN) ---
     if df_tc_diario is not None:
         df_tc_diario.columns = [str(c).strip().upper() for c in df_tc_diario.columns]
+        
+        # 1. Intentar mapear Legajo -> Nombre desde este archivo de Producción
+        col_leg_prod = next((c for c in df_tc_diario.columns if 'LEGAJO' in c or 'FICHA' in c or 'USUARIO' in c), None)
+        col_nom_prod = next((c for c in df_tc_diario.columns if 'NOMBRE' in c or 'OPERARIO' in c), None)
+        
+        if col_leg_prod and col_nom_prod:
+            temp_map = df_tc_diario[[col_leg_prod, col_nom_prod]].dropna().drop_duplicates()
+            mapping_ops = dict(zip(temp_map[col_leg_prod].astype(str).str.strip().str.upper(), temp_map[col_nom_prod].astype(str).str.strip().str.upper()))
+            
+            # Reemplazar el nombre en df_operarios_prod si hay match
+            df_operarios_prod['Nombre'] = df_operarios_prod['Legajo'].map(mapping_ops).fillna(df_operarios_prod['Nombre'])
+
+        # 2. Cruzar TC Diario
         col_fec_tc = next((c for c in df_tc_diario.columns if 'FECHA' in c), None)
         col_cod_tc = next((c for c in df_tc_diario.columns if 'PRODUCTO' in c or 'CÓDIGO' in c or 'CODIGO' in c), None)
         col_tc_tc = next((c for c in df_tc_diario.columns if 'TC' in c or 'CICLO' in c), None)
@@ -216,12 +212,12 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
             df_tc_diario[col_tc_tc] = pd.to_numeric(df_tc_diario[col_tc_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
             
             # Cruce Diario
-            df_daily_prod = df_daily_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]], left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
+            df_daily_prod = df_daily_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]].drop_duplicates(), left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
             df_daily_prod['TC'] = np.where((df_daily_prod[col_tc_tc].notna()) & (df_daily_prod[col_tc_tc] > 0), df_daily_prod[col_tc_tc], df_daily_prod['TC_Base'])
             df_daily_prod.drop(columns=['Fecha_Str_TC', col_cod_tc, col_tc_tc], inplace=True, errors='ignore')
 
             # Cruce Operarios
-            df_operarios_prod = df_operarios_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]], left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
+            df_operarios_prod = df_operarios_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]].drop_duplicates(), left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
             df_operarios_prod['TC'] = np.where((df_operarios_prod[col_tc_tc].notna()) & (df_operarios_prod[col_tc_tc] > 0), df_operarios_prod[col_tc_tc], df_operarios_prod['TC_Base'])
             df_operarios_prod.drop(columns=['Fecha_Str_TC', col_cod_tc, col_tc_tc], inplace=True, errors='ignore')
 
@@ -236,11 +232,12 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     else:
         intervalo_str = "Periodo: Sin datos"
 
-    return df_daily_prod, df_fallas, df_operarios_prod, intervalo_str
+    return df_daily_prod, df_operarios_prod, intervalo_str
 
 # ==========================================
 # 3. FUNCIONES DE EXPORTACIÓN A PDF
 # ==========================================
+# (Se conservan intactas las funciones del PDF para no afectar tu código base de exportación)
 def generar_pdf_produccion(maquinas, df_productos, intervalo_str):
     pdf = ReportePDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -254,25 +251,21 @@ def generar_pdf_produccion(maquinas, df_productos, intervalo_str):
         pdf.add_page()
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 8, f"MÁQUINA: {maq}", ln=True)
-
         pdf.set_font("Arial", 'I', 10)
         pdf.set_text_color(100, 100, 100)
         pdf.cell(0, 6, intervalo_str, ln=True)
         pdf.set_text_color(0, 0, 0)
         pdf.ln(5)
-
         pdf.set_font("Arial", 'B', 10)
         pdf.cell(0, 8, "Detalle de Cadencia y Disponibilidad por Producto", ln=True)
 
         productos_unicos = sorted(df_maq_prods['Producto'].unique())
         for prod in productos_unicos:
             df_p_data = df_maq_prods[df_maq_prods['Producto'] == prod].sort_values('Simultaneo_Con')
-
             pdf.ln(3)
             pdf.set_font("Arial", 'B', 8)
             pdf.set_fill_color(220, 220, 220)
             pdf.cell(0, 7, f"CODIGO: {prod}", 0, 1, 'L', True)
-
             pdf.set_font("Arial", 'B', 7)
             pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
             
@@ -301,7 +294,6 @@ def generar_pdf_produccion(maquinas, df_productos, intervalo_str):
                 if diff < 0: pdf.set_text_color(200, 0, 0)
                 else: pdf.set_text_color(0, 150, 0)
                 pdf.cell(16, 6, f"{diff:.1f}", 1, 0, 'C')
-                
                 pdf.set_text_color(0, 0, 0)
                 pdf.cell(23, 6, f"{perfo:.1f}%", 1, 1, 'C')
 
@@ -322,7 +314,6 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     df_daily['Tiempo_Hs'] = df_daily['Tiempo_Min'] / 60.0
     df_daily['T_Parada_Hs'] = df_daily['T_Parada'] / 60.0
     df_daily['Disp'] = np.where((df_daily['Tiempo_Hs'] + df_daily['T_Parada_Hs']) > 0, (df_daily['Tiempo_Hs'] / (df_daily['Tiempo_Hs'] + df_daily['T_Parada_Hs'])) * 100, 0)
-    
     df_daily['PH_Real'] = np.where(df_daily['Tiempo_Hs'] > 0, df_daily['Pzas_Prod'] / df_daily['Tiempo_Hs'], 0)
     df_daily['PH_Est'] = np.where(df_daily['TC'] > 0, 60 / df_daily['TC'], 0)
     df_daily['Perfo'] = np.where(df_daily['PH_Est'] > 0, (df_daily['PH_Real'] / df_daily['PH_Est']) * 100, 0)
@@ -330,7 +321,6 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     pdf.add_page()
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 10, f"HISTORICO DE PRODUCCION DIARIO: {maquina_seleccionada}", ln=True, align='C')
-
     pdf.set_font("Arial", 'I', 10)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 6, intervalo_str, ln=True, align='C')
@@ -345,11 +335,9 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     ax.set_title("Evolucion de Cadencia por Codigo de Producto", fontweight='bold', fontsize=10)
     ax.set_xlabel("Fechas de Produccion")
     ax.set_ylabel("Piezas / Hora (Real)")
-
     fechas_unicas = sorted(df_daily['Fecha_DT'].unique())
     ax.set_xticks(fechas_unicas)
     ax.set_xticklabels([pd.to_datetime(x).strftime('%d/%m/%Y') for x in fechas_unicas], rotation=45, ha='right', fontsize=7)
-    
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=7, title="Codigos")
     ax.grid(True, linestyle=':', alpha=0.6)
 
@@ -361,16 +349,13 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     pdf.image(chart, x=10, w=190)
     os.remove(chart)
     pdf.ln(5)
-
     pdf.set_font("Arial", 'B', 7)
     pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
-
     cols = [("Fecha", 18), ("Codigo", 45), ("Hs Prd", 12), ("Hs Par", 12), ("Disp%", 13), ("B", 12), ("RT", 10), ("Scr", 10), ("PH R", 14), ("PH Est", 14), ("Dif", 15), ("Perf%", 15)]
     for txt, w in cols: pdf.cell(w, 8, txt, 1, 0, 'C', True)
     pdf.ln()
 
     pdf.set_font("Arial", "", 7); pdf.set_text_color(0, 0, 0)
-
     for _, r in df_daily.iterrows():
         pdf.cell(18, 6, pd.to_datetime(r['Fecha_Str']).strftime('%d/%m/%Y'), 1, 0, 'C')
         pdf.cell(45, 6, clean_text(r['Producto'])[:32], 1, 0, 'L')
@@ -382,12 +367,10 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
         pdf.cell(10, 6, str(int(r['Scrap_Edit'])), 1, 0, 'C')
         pdf.cell(14, 6, f"{r['PH_Real']:.1f}", 1, 0, 'C')
         pdf.cell(14, 6, f"{r['PH_Est']:.1f}", 1, 0, 'C')
-
         diff = r['PH_Real'] - r['PH_Est']
         if diff < 0: pdf.set_text_color(200, 0, 0)
         else: pdf.set_text_color(0, 150, 0)
         pdf.cell(15, 6, f"{diff:.1f}", 1, 0, 'C')
-
         pdf.set_text_color(0, 0, 0)
         pdf.cell(15, 6, f"{r['Perfo']:.1f}%", 1, 1, 'C')
 
@@ -414,28 +397,27 @@ def generar_evolutivo_master(df_daily_prod, maquinas, modo, intervalo_str):
             nombre = "Reporte_Evolutivo_Consolidado.pdf"
             pdf.output(nombre)
             archivos_generados.append(nombre)
-
     return archivos_generados
 
 # ==========================================
 # 4. STREAMLIT APP UI
 # ==========================================
-st.set_page_config(page_title="Análisis de Cadencias y Fallas", layout="wide", page_icon="⚙️")
+st.set_page_config(page_title="Análisis de Cadencias y Operarios", layout="wide", page_icon="⚙️")
 
 with st.sidebar:
     st.title("⚙️ Configuración")
     st.header("1. Carga de Archivos")
     uploaded_e = st.file_uploader("📂 Archivo EVENTOS", type=['csv', 'xlsx'])
     uploaded_s = st.file_uploader("📂 Archivo TC BASE", type=['csv', 'xlsx'])
-    uploaded_tc_diario = st.file_uploader("📂 Archivo TC DIARIO (Opcional)", type=['csv', 'xlsx'], help="Debe contener Fecha, Código de Producto y el TC real del día.")
+    uploaded_tc_diario = st.file_uploader("📂 Archivo PRODUCCIÓN (TC/Operarios)", type=['csv', 'xlsx'], help="Debe contener Fecha, Código de Producto, Legajo, Nombre y el TC real del día.")
 
-st.title("⚙️ Análisis Integral: Cadencias, Fallas y Operarios")
+st.title("⚙️ Análisis Integral: Cadencias y Operarios")
 
 if not (uploaded_e and uploaded_s):
     st.info("👈 Por favor, carga al menos los archivos de EVENTOS y TC BASE en el panel lateral.")
 else:
     try:
-        with st.spinner('Procesando datos, desglosando piezas, cruzando tiempos de ciclo y operarios...'):
+        with st.spinner('Procesando datos, cruzando legajos, tiempos de ciclo y operarios...'):
             df_e_raw = pd.read_csv(uploaded_e) if uploaded_e.name.endswith('.csv') else pd.read_excel(uploaded_e)
             df_s_raw = pd.read_csv(uploaded_s) if uploaded_s.name.endswith('.csv') else pd.read_excel(uploaded_s)
             
@@ -443,17 +425,15 @@ else:
             if uploaded_tc_diario:
                 df_tc_raw = pd.read_csv(uploaded_tc_diario) if uploaded_tc_diario.name.endswith('.csv') else pd.read_excel(uploaded_tc_diario)
             
-            df_daily_prod_base, df_fallas, df_operarios_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw, df_tc_raw)
+            df_daily_prod_base, df_operarios_prod, intervalo_str = procesar_datos_eventos_tc(df_e_raw, df_s_raw, df_tc_raw)
 
-        # Usamos df_daily_prod para los cálculos en caliente (sin memoria entre recargas)
+        # Copia de seguridad y memoria de sesión
         df_daily_prod = df_daily_prod_base.copy()
         df_daily_prod['Clave_Unica'] = df_daily_prod['Fecha_Str'] + "_" + df_daily_prod['Máquina'] + "_" + df_daily_prod['Producto']
 
-        # MEMORIA DE SESIÓN PROTEGIDA (Editor Masivo)
         if "ediciones_temp_editor" not in st.session_state:
             st.session_state["ediciones_temp_editor"] = {}
         
-        # Inyectar ediciones temporales guardadas
         df_daily_prod['Buenas_Edit'] = df_daily_prod['Buenas']
         df_daily_prod['RT_Edit'] = df_daily_prod['RT']
         df_daily_prod['Scrap_Edit'] = df_daily_prod['Scrap']
@@ -465,12 +445,8 @@ else:
                 df_daily_prod.loc[mask, 'RT_Edit'] = edits.get('R', 0)
                 df_daily_prod.loc[mask, 'Scrap_Edit'] = edits.get('S', 0)
 
-        # Pzas_Prod oficial ahora es la suma editada
         df_daily_prod['Pzas_Prod'] = df_daily_prod['Buenas_Edit'] + df_daily_prod['RT_Edit'] + df_daily_prod['Scrap_Edit']
 
-        # ====================================================================================
-        # DF_PRODUCTOS (RESUMEN GENERAL DE TODA LA MÁQUINA)
-        # ====================================================================================
         df_daily_prod['Pzas_Est_Dia'] = np.where(df_daily_prod['TC'] > 0, (df_daily_prod['Tiempo_Min'] / df_daily_prod['TC']), 0)
         
         df_productos = df_daily_prod.groupby(['Máquina', 'Producto', 'N']).agg({
@@ -489,8 +465,7 @@ else:
 
         maquinas_disp = sorted(df_daily_prod['Máquina'].unique())
         
-        # --- CREACIÓN DE LAS 4 PESTAÑAS ---
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Cadencias y Performance", "⚠️ Fallas y Operarios", "🛠️ Editor Masivo por Planta", "📄 Exportación PDF"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Cadencias y Performance", "👷 Operarios y Performance", "🛠️ Editor Masivo por Planta", "📄 Exportación PDF"])
 
         # =====================================================================
         # PESTAÑA 1: VISUALIZACIÓN DE PERFORMANCE
@@ -572,64 +547,48 @@ else:
             )
 
         # =====================================================================
-        # PESTAÑA 2: FALLAS Y OPERARIOS 
+        # PESTAÑA 2: OPERARIOS (TABLA ANCHA)
         # =====================================================================
         with tab2:
-            maq_sel_t2 = st.selectbox("📌 Seleccione la Máquina (Fallas y Operarios):", maquinas_disp, key='maq_t2')
+            st.markdown("### 👷 Performance y Cadencia por Operario")
+            st.write("Calculado en base al tiempo de producción individual y el TC del producto fabricado en su turno (cruzando Legajo y Nombre).")
             
-            col_f, col_o = st.columns([1, 1.2])
+            maq_sel_t2 = st.selectbox("📌 Seleccione la Máquina:", maquinas_disp, key='maq_t2')
             
-            with col_f:
-                st.markdown("### ⚠️ Top Fallas (Tiempos de Parada)")
-                df_f_maq = df_fallas[df_fallas['Máquina'] == maq_sel_t2].copy()
-                if not df_f_maq.empty:
-                    df_f_res = df_f_maq.groupby('Falla')['Tiempo_Min'].sum().reset_index()
-                    df_f_res['Horas Perdidas'] = df_f_res['Tiempo_Min'] / 60.0
-                    df_f_res = df_f_res.sort_values('Horas Perdidas', ascending=False).head(10)
-                    
-                    fig_f, ax_f = plt.subplots(figsize=(6, 4))
-                    ax_f.barh(df_f_res['Falla'].str[:30], df_f_res['Horas Perdidas'], color='crimson')
-                    ax_f.invert_yaxis()
-                    ax_f.set_xlabel("Horas Totales")
-                    st.pyplot(fig_f)
-                    
-                    st.dataframe(df_f_res[['Falla', 'Horas Perdidas']].style.format({'Horas Perdidas': '{:.1f}'}), use_container_width=True, hide_index=True)
-                else:
-                    st.info("No se registraron fallas para esta máquina en el periodo.")
-
-            with col_o:
-                st.markdown("### 👷 Performance Real por Operario")
-                st.write("Calculado en base al tiempo de producción individual y el TC del producto fabricado en su turno.")
-                df_o_maq = df_operarios_prod[df_operarios_prod['Máquina'] == maq_sel_t2].copy()
+            df_o_maq = df_operarios_prod[df_operarios_prod['Máquina'] == maq_sel_t2].copy()
+            
+            if not df_o_maq.empty:
+                # Calcular piezas reales y estimadas para el operario
+                df_o_maq['Pzas_Prod_Op'] = df_o_maq['Buenas'] + df_o_maq['RT'] + df_o_maq['Scrap']
+                df_o_maq['Pzas_Est_Op'] = np.where(df_o_maq['TC'] > 0, df_o_maq['T_Prod'] / df_o_maq['TC'], 0)
                 
-                if not df_o_maq.empty:
-                    # Calcular las piezas producidas y las que se "esperaban" de ese operario
-                    df_o_maq['Pzas_Prod_Op'] = df_o_maq['Buenas'] + df_o_maq['RT'] + df_o_maq['Scrap']
-                    df_o_maq['Pzas_Est_Op'] = np.where(df_o_maq['TC'] > 0, df_o_maq['T_Prod'] / df_o_maq['TC'], 0)
-                    
-                    df_o_res = df_o_maq.groupby(['Legajo', 'Nombre']).agg({
-                        'T_Prod': 'sum', 'T_Parada': 'sum', 'Pzas_Prod_Op': 'sum', 'Pzas_Est_Op': 'sum'
-                    }).reset_index()
-                    
-                    df_o_res['Hs Prod'] = df_o_res['T_Prod'] / 60.0
-                    df_o_res['Hs Parada'] = df_o_res['T_Parada'] / 60.0
-                    
-                    df_o_res['Performance (%)'] = np.where(
-                        df_o_res['Pzas_Est_Op'] > 0, 
-                        (df_o_res['Pzas_Prod_Op'] / df_o_res['Pzas_Est_Op']) * 100, 
-                        0
-                    )
-                    
-                    df_o_res = df_o_res.sort_values('Performance (%)', ascending=False)
-                    
-                    st.dataframe(
-                        df_o_res[['Legajo', 'Nombre', 'Hs Prod', 'Hs Parada', 'Performance (%)']].style.format({
-                            'Hs Prod': '{:.1f}', 'Hs Parada': '{:.1f}', 'Performance (%)': '{:.1f}%'
-                        }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
-                        use_container_width=True, hide_index=True
-                    )
-                else:
-                    st.info("No hay datos de operarios para esta máquina.")
+                df_o_res = df_o_maq.groupby(['Legajo', 'Nombre']).agg({
+                    'T_Prod': 'sum', 'T_Parada': 'sum', 'Pzas_Prod_Op': 'sum', 'Pzas_Est_Op': 'sum'
+                }).reset_index()
+                
+                df_o_res['Hs Prod'] = df_o_res['T_Prod'] / 60.0
+                df_o_res['Hs Parada'] = df_o_res['T_Parada'] / 60.0
+                
+                df_o_res['PH Real'] = np.where(df_o_res['Hs Prod'] > 0, df_o_res['Pzas_Prod_Op'] / df_o_res['Hs Prod'], 0)
+                df_o_res['Cadencia (PH Est)'] = np.where(df_o_res['Hs Prod'] > 0, df_o_res['Pzas_Est_Op'] / df_o_res['Hs Prod'], 0)
+                
+                df_o_res['Performance (%)'] = np.where(
+                    df_o_res['Pzas_Est_Op'] > 0, 
+                    (df_o_res['Pzas_Prod_Op'] / df_o_res['Pzas_Est_Op']) * 100, 
+                    0
+                )
+                
+                df_o_res = df_o_res.sort_values('Performance (%)', ascending=False)
+                
+                st.dataframe(
+                    df_o_res[['Legajo', 'Nombre', 'Hs Prod', 'Hs Parada', 'Pzas_Prod_Op', 'PH Real', 'Cadencia (PH Est)', 'Performance (%)']].style.format({
+                        'Hs Prod': '{:.2f}', 'Hs Parada': '{:.2f}', 'Pzas_Prod_Op': '{:,.0f}',
+                        'PH Real': '{:.1f}', 'Cadencia (PH Est)': '{:.1f}', 'Performance (%)': '{:.1f}%'
+                    }).background_gradient(subset=['Performance (%)'], cmap='RdYlGn', vmin=50, vmax=100),
+                    use_container_width=True, hide_index=True
+                )
+            else:
+                st.info("No hay datos de operarios para esta máquina en el rango seleccionado.")
 
         # =====================================================================
         # PESTAÑA 3: EDITOR MASIVO SEPARADO POR PLANTA
