@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from fpdf import FPDF
 import io
 import os
@@ -45,23 +46,24 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
         for b in busquedas:
             for c in df.columns:
                 if b in c.upper(): return c
-        raise KeyError(f"No se encontro columna similar a {busquedas} en {nombre_archivo}")
+        raise KeyError(f"No se encontro columna similar a {busquedas} en {nombre_archivo}. Verifica los nombres de tus columnas en el Excel.")
 
     # 1. Identificación de columnas en Eventos
     ce_maq = encontrar_col(df_e, ['MÁQUINA', 'MAQUINA', 'CELDA'], 'EVENTOS')
-    ce_fec_ini = encontrar_col(df_e, ['FECHA INICIO'], 'EVENTOS')
-    ce_fec_fin = encontrar_col(df_e, ['FECHA FIN'], 'EVENTOS')
-    ce_tiempo = encontrar_col(df_e, ['TIEMPO (MIN)', 'TIEMPO PRODUCTIVO', 'TIEMPO'], 'EVENTOS')
+    ce_fec_ini = encontrar_col(df_e, ['FECHA INICIO', 'INICIO', 'FECHA'], 'EVENTOS')
+    ce_fec_fin = encontrar_col(df_e, ['FECHA FIN', 'FIN'], 'EVENTOS')
+    ce_tiempo = encontrar_col(df_e, ['TIEMPO (MIN)', 'TIEMPO PRODUCTIVO', 'TIEMPO', 'MINUTOS'], 'EVENTOS')
     ce_evento = encontrar_col(df_e, ['NIVEL 1', 'EVENTO', 'ESTADO'], 'EVENTOS')
 
-    ce_buenas = encontrar_col(df_e, ['BUENAS'], 'EVENTOS')
+    # CORRECCIÓN: Se amplía la búsqueda de la columna de piezas buenas
+    ce_buenas = encontrar_col(df_e, ['BUENAS', 'PIEZAS', 'CANTIDAD', 'PRODUCIDAS', 'CANT.', 'OK'], 'EVENTOS')
     ce_nobuenas = next((c for c in df_e.columns if 'NO BUENA' in c.upper() or 'MALA' in c.upper() or 'RECHAZO' in c.upper() or 'SCRAP' in c.upper()), None)
 
     cols_cod_e = [c for c in df_e.columns if ('CÓDIGO' in c.upper() or 'CODIGO' in c.upper()) and ('PRODUCTO' in c.upper() or 'SEMIELABORADO' in c.upper())]
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO/SEMIELABORADO' in c.upper() and 'DESC' not in c.upper()]
     if not cols_cod_e: cols_cod_e = [c for c in df_e.columns if 'PRODUCTO' in c.upper() and 'DESC' not in c.upper()]
 
-    cols_usr = [c for c in df_e.columns if 'USUARIO' in c.upper() or 'OPERARIO' in c.upper()]
+    cols_usr = [c for c in df_e.columns if 'USUARIO' in c.upper() or 'OPERARIO' in c.upper() or 'LEGAJO' in c.upper()]
 
     subset_dups = [ce_maq, ce_fec_ini, ce_fec_fin, ce_tiempo, ce_buenas] + cols_cod_e
     df_e = df_e.drop_duplicates(subset=subset_dups, keep='first').copy()
@@ -171,7 +173,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     df_daily_prod.rename(columns={col_tc: 'TC', 'Máquina_Consol': 'Máquina'}, inplace=True)
     df_daily_prod['TC'] = df_daily_prod['TC'].fillna(0.0)
 
-    # 7. INYECCIÓN DEL ARCHIVO DE PRODUCCIÓN DIARIO (Para actualizar TC en base a la fecha)
+    # 7. INYECCIÓN DEL ARCHIVO DE PRODUCCIÓN DIARIO
     if df_tc_diario is not None:
         df_tc_diario.columns = [str(c).strip().upper() for c in df_tc_diario.columns]
         col_fec_tc = next((c for c in df_tc_diario.columns if 'FECHA' in c), None)
@@ -183,7 +185,6 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
             df_tc_diario[col_cod_tc] = df_tc_diario[col_cod_tc].astype(str).str.strip().str.upper()
             df_tc_diario[col_tc_tc] = pd.to_numeric(df_tc_diario[col_tc_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
             
-            # Cruzar diario y sobreescribir el TC si existe
             df_daily_prod = df_daily_prod.merge(df_tc_diario[['Fecha_Str_TC', col_cod_tc, col_tc_tc]].drop_duplicates(), left_on=['Fecha_Str', 'Producto'], right_on=['Fecha_Str_TC', col_cod_tc], how='left')
             df_daily_prod['TC'] = np.where((df_daily_prod[col_tc_tc].notna()) & (df_daily_prod[col_tc_tc] > 0), df_daily_prod[col_tc_tc], df_daily_prod['TC'])
             df_daily_prod.drop(columns=['Fecha_Str_TC', col_cod_tc, col_tc_tc], inplace=True, errors='ignore')
@@ -199,7 +200,7 @@ def procesar_datos_eventos_tc(df_e, df_s, df_tc_diario=None):
     return df_global_res, df_productos_res, df_operarios_res, df_daily_prod, intervalo_str
 
 # ==========================================
-# FUNCIONES DE EXPORTACIÓN A PDF (Mantenidas idénticas al Colab)
+# FUNCIONES DE EXPORTACIÓN A PDF
 # ==========================================
 def generar_pdf_produccion(maquinas, df_global, df_productos, df_operarios, incluir_operarios, intervalo_str):
     pdf = ReportePDF()
@@ -299,7 +300,7 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, f"HISTORICO DE PRODUCCION DIARIO: {maquina_seleccionada}", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10); pdf.set_text_color(100, 100, 100); pdf.cell(0, 6, intervalo_str, ln=True, align='C'); pdf.set_text_color(0, 0, 0); pdf.ln(2)
 
-    # Gráfico con Doble Eje (PH Real vs TC)
+    # Gráfico con Doble Eje (PH Real vs TC) y Fechas Dinámicas (SOLUCIÓN EJE X y EJE Y)
     fig, ax1 = plt.subplots(figsize=(10, 4))
     ax2 = ax1.twinx()
     
@@ -313,9 +314,21 @@ def generar_pagina_evolutivo(pdf, df_daily_prod, maquina_seleccionada, intervalo
     ax1.set_ylabel("Piezas / Hora (Real)")
     ax2.set_ylabel("Tiempo de Ciclo (TC)", color='gray')
 
-    fechas_unicas = sorted(df_daily['Fecha_DT'].unique())
-    ax1.set_xticks(fechas_unicas)
-    ax1.set_xticklabels([x.strftime('%d/%m/%Y') for x in fechas_unicas], rotation=45, ha='right', fontsize=7)
+    # Ajuste dinámico de los límites del Eje Y para no cortar puntos
+    min_ph = df_daily['PH_Real'].min()
+    max_ph = df_daily['PH_Real'].max()
+    padding_ph = (max_ph - min_ph) * 0.1 if max_ph != min_ph else 5
+    ax1.set_ylim(max(0, min_ph - padding_ph), max_ph + padding_ph)
+
+    min_tc = df_daily['TC'].min()
+    max_tc = df_daily['TC'].max()
+    padding_tc = (max_tc - min_tc) * 0.1 if max_tc != min_tc else 0.5
+    ax2.set_ylim(max(0, min_tc - padding_tc), max_tc + padding_tc)
+
+    # Configuración de espaciado de fechas 100% temporal
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m/%Y'))
+    ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
+    fig.autofmt_xdate(rotation=45)
     
     lines_1, labels_1 = ax1.get_legend_handles_labels()
     lines_2, labels_2 = ax2.get_legend_handles_labels()
@@ -369,7 +382,7 @@ def generar_evolutivo_master(df_daily_prod, maquinas, modo, intervalo_str):
     return archivos_generados
 
 # ==========================================
-# UI STREAMLIT (Basada en la lógica exacta del Colab + TC Diario)
+# UI STREAMLIT
 # ==========================================
 st.set_page_config(page_title="Análisis de Eficiencia Colab-Mode", layout="wide", page_icon="⚙️")
 
@@ -414,6 +427,7 @@ else:
                     df_daily_grp['Tiempo_Hs'] = df_daily_grp['Tiempo_Min'] / 60.0
                     df_daily_grp['PH_Real'] = np.where(df_daily_grp['Tiempo_Hs'] > 0, df_daily_grp['Pzas_Prod'] / df_daily_grp['Tiempo_Hs'], 0)
                     
+                    # (SOLUCIÓN EJE X y EJE Y STREAMLIT UI)
                     fig, ax1 = plt.subplots(figsize=(12, 5))
                     ax2 = ax1.twinx()
                     
@@ -425,9 +439,21 @@ else:
                     ax1.set_ylabel("Piezas / Hora (PH Real)", fontweight='bold')
                     ax2.set_ylabel("Tiempo de Ciclo (TC)", color='gray', fontweight='bold')
                     
-                    fechas_unicas = sorted(df_daily_grp['Fecha_DT'].unique())
-                    ax1.set_xticks(fechas_unicas)
-                    ax1.set_xticklabels([x.strftime('%d/%m/%Y') for x in fechas_unicas], rotation=45, ha='right')
+                    # Ajuste dinámico de los límites del Eje Y para no cortar puntos
+                    min_ph = df_daily_grp['PH_Real'].min()
+                    max_ph = df_daily_grp['PH_Real'].max()
+                    padding_ph = (max_ph - min_ph) * 0.1 if max_ph != min_ph else 5
+                    ax1.set_ylim(max(0, min_ph - padding_ph), max_ph + padding_ph)
+
+                    min_tc = df_daily_grp['TC'].min()
+                    max_tc = df_daily_grp['TC'].max()
+                    padding_tc = (max_tc - min_tc) * 0.1 if max_tc != min_tc else 0.5
+                    ax2.set_ylim(max(0, min_tc - padding_tc), max_tc + padding_tc)
+
+                    # Configuración de espaciado de fechas 100% temporal
+                    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m/%Y'))
+                    ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
+                    fig.autofmt_xdate(rotation=45)
                     
                     # Unir leyendas
                     lines_1, labels_1 = ax1.get_legend_handles_labels()
